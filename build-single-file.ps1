@@ -31,8 +31,10 @@ foreach ($p in @($Viewer, $Template)) {
 $tpl  = [IO.File]::ReadAllText($Template)
 $html = [IO.File]::ReadAllText($Viewer)
 
-if (-not $html.Contains('<!--VP-' + 'INJECT-->')) {
-    throw "$Viewer has no VP-INJECT anchor; is it the right file?"
+# The launcher appends its driver script just before the closing body tag, and
+# calls boot()/parseCSV() from the viewer's own script. Nothing else is assumed.
+foreach ($needed in @('</body>', 'function boot(', 'function parseCSV(')) {
+    if (-not $html.Contains($needed)) { throw "$Viewer is missing '$needed'; is it the right file?" }
 }
 # The batch header is only safe if cmd never reaches the payload, and it never
 # does: the header exits first. But a stray marker would break extraction.

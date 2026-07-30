@@ -255,8 +255,6 @@ td.mini{width:140px}
 </head>
 <body>
 
-<!-- The single-file launcher injects the profile here. -->
-<!--VP-INJECT-->
 
 <div class="wrap">
 
@@ -1328,30 +1326,6 @@ const setTheme = t => {
 };
 $("btnTheme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 setTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-
-/* =========================================================================
-   9. Data handed straight to the page
-
-   The single-file launcher injects a <script> that sets VP_PROFILE before this
-   runs. When it is there, open it and hide the file controls: the user was
-   given the data, not asked to find it.
-
-   Nothing injected means the ordinary page: drop a file, or browse for one.
-   ========================================================================= */
-(() => {
-  if (typeof window.VP_PROFILE !== "string" || !window.VP_PROFILE.trim()) return;
-
-  try { boot(parseCSV(window.VP_PROFILE), window.VP_PROFILE_NAME || "profile"); }
-  catch (e){ showErr("The profile handed to this page could not be read: " + e.message); return; }
-
-  $("btnNew").classList.add("hidden");
-  $("fileSub").textContent = (window.VP_PROFILE_NAME || "Profile") +
-    "  ·  " + DATA.list.length + " instrument" + (DATA.list.length > 1 ? "s" : "");
-
-  // No instrument is chosen for the user: which one comes first varies by file.
-  // A single-instrument file is the one case with nothing to choose.
-  if (DATA.list.length === 1){ active = 0; pick(0); }
-})();
 
 </script>
 </body>

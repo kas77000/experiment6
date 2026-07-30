@@ -60,17 +60,33 @@ $i    = $self.IndexOf($hm)
 if ($i -lt 0) { Quit "This file is missing its viewer. Rebuild it with build-single-file.ps1." 4 }
 $html = $self.Substring($i + $hm.Length)
 
-# Hand the data to the page as a JavaScript string. ConvertTo-Json escapes
+# The viewer itself knows nothing about any of this: it is the plain
+# choose-a-file page. So the data is appended after its own script, as a second
+# script that calls the functions already defined there. ConvertTo-Json escapes
 # quotes, backslashes and newlines, so any CSV content is safe to embed.
-# No instrument is chosen here: which one is first varies from file to file,
+#
+# No instrument is chosen here. Which one comes first varies from file to file,
 # so the page opens on the list and the user picks.
-$payload = "<script>VP_PROFILE = " + (ConvertTo-Json $csvText) + ";" +
-           "VP_PROFILE_NAME = " + (ConvertTo-Json ([IO.Path]::GetFileName($csv))) + ";</script>"
+$name = [IO.Path]::GetFileName($csv)
+$driver = @"
+<script>
+(function () {
+  var csv = $(ConvertTo-Json $csvText);
+  var name = $(ConvertTo-Json $name);
+  try { boot(parseCSV(csv), name); }
+  catch (e) { showErr("The profile could not be read: " + e.message); return; }
+  document.getElementById("btnNew").classList.add("hidden");
+  document.getElementById("fileSub").textContent =
+    name + "  ·  " + DATA.list.length + " instrument" + (DATA.list.length > 1 ? "s" : "");
+  if (DATA.list.length === 1) { pick(0); }
+})();
+</script>
+"@
 
-$marker = '<!--VP-' + 'INJECT-->'
-$j = $html.IndexOf($marker)
+$marker = '</bo' + 'dy>'
+$j = $html.LastIndexOf($marker)
 if ($j -lt 0) { Quit "The viewer inside this file is not the expected one." 4 }
-$merged = $html.Substring(0, $j) + $payload + "`n" + $html.Substring($j)
+$merged = $html.Substring(0, $j) + $driver + $html.Substring($j)
 
 # One fixed path, overwritten each run: a stable address the browser can keep,
 # and nothing piles up on disk.
