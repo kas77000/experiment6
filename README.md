@@ -18,6 +18,54 @@ via `FileReader` and never leaves the machine.
 
 `sample_india_volume_profile.csv` is included so you can try it immediately.
 
+## Sending one to a client
+
+For a client, the profile is baked into the HTML at build time, so they open the
+file and see the charts. Nothing to locate, no picker, no server.
+
+```bash
+python build-client-file.py --csv today.csv --out dist/profile_2026-07-30.html
+```
+
+| Flag | |
+|---|---|
+| `--csv` | the profile to embed |
+| `--out` | the client file to write |
+| `--select RELIANCE.IN` | open on that instrument instead of the picker |
+| `--only A.IN,B.IN` | ship only these instruments, drop the rest |
+| `--title "..."` | browser tab title |
+
+With `--select`, or when the file holds a single instrument, the charts are on
+screen the moment it opens. Otherwise it lands on the picker with the data
+already loaded. Either way the drop zone and **Open another file** are gone: the
+client is never asked to find anything.
+
+Rebuild and resend whenever the data changes. The client file is ordinary HTML,
+so it survives mail, chat and file shares intact.
+
+### Why embedded and not fetched
+
+A file mailed to a client is opened by double-click, so the page runs on
+`file://` and the browser will not let it read anything else:
+
+- `fetch()` does not implement the `file:` scheme at all, so a sibling CSV is
+  unreachable. This is by design, not a permission that can be granted.
+- `XMLHttpRequest` to a local file is blocked in every current browser without
+  starting it behind a flag such as `--allow-file-access-from-files`.
+- An `https://` request *from* `file://` sends `Origin: null`. It only succeeds
+  against a host returning `Access-Control-Allow-Origin: *`, which SharePoint,
+  OneDrive and Windows file shares do not.
+
+So no amount of loader code makes an auto-fetch work off a mailed file.
+Embedding removes the request, and with it the problem. If you do have a static
+host that sets `Access-Control-Allow-Origin: *`, fetching becomes possible, but
+it adds a dependency the embedded file does not have.
+
+Size scales with instrument count: about 4 KB of viewer plus roughly 3.5 KB per
+instrument at 5-minute buckets, so 20 instruments is around 160 KB and a single
+one about 72 KB. Use `--only` to keep a client file to the names that client
+actually gets.
+
 ## Input format
 
 A metadata comment line, a header row (the leading `#` is optional), then one row

@@ -15,3 +15,6 @@ desktop.ini
 .DS_Store
 .vscode/
 .idea/
+
+# Generated client files
+dist/

@@ -253,6 +253,24 @@ td.mini{width:140px}
 </style>
 </head>
 <body>
+
+<!-- ===========================================================================
+     EMBEDDED PROFILE
+     Stamped in by build-client-file.py. When this block holds a CSV the page
+     opens straight into it: no file picker, no network request, no server.
+
+     This is the only approach that works for a file mailed to a client. A page
+     opened by double-click runs on file://, and browsers refuse to let such a
+     page read anything else: fetch() does not implement the file: scheme at
+     all, XMLHttpRequest to a sibling file is blocked without a browser flag,
+     and an https:// call from file:// sends "Origin: null", which SharePoint,
+     OneDrive and file shares reject. Embedding sidesteps all of it, because
+     there is nothing left to request.
+
+     Leave it empty and the page behaves exactly as before: drop or browse.
+     =========================================================================== -->
+<script id="embeddedProfile" type="text/plain" data-name="" data-select=""></script>
+
 <div class="wrap">
 
   <header class="top">
@@ -1322,6 +1340,38 @@ const setTheme = t => {
 };
 $("btnTheme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 setTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+
+/* =========================================================================
+   9. Embedded profile
+   If the page was built with a CSV stamped into it, open straight into that.
+   Nothing is fetched, so this works on file://, offline, behind any proxy.
+   ========================================================================= */
+(() => {
+  const slot = $("embeddedProfile");
+  const csv = slot ? slot.textContent.trim() : "";
+  if (!csv) return;                                  // unstamped: keep the picker
+
+  try {
+    boot(parseCSV(csv), slot.dataset.name || "embedded profile");
+  } catch (e){
+    showErr("The profile built into this file could not be read: " + e.message);
+    return;
+  }
+
+  // the client was handed data, not a file to go and find
+  $("btnNew").classList.add("hidden");
+  $("fileSub").textContent = (slot.dataset.name || "Embedded profile") +
+    "  ·  " + DATA.list.length + " instrument" + (DATA.list.length > 1 ? "s" : "");
+
+  const want = (slot.dataset.select || "").trim().toUpperCase();
+  if (want){
+    const i = matches.findIndex(g => (g.fidessa || "").toUpperCase() === want ||
+                                     (g.reuters || "").toUpperCase() === want);
+    if (i >= 0){ active = i; pick(i); }
+  } else if (DATA.list.length === 1){
+    active = 0; pick(0);                             // one instrument: nothing to choose
+  }
+})();
 </script>
 </body>
 </html>
