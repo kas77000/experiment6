@@ -122,11 +122,15 @@ input[type=file]{display:none}
 .seg button[aria-pressed="true"],
 .seg button[aria-pressed="true"]:hover{background:var(--series);color:#fff;border-color:transparent}
 .seg button:focus-visible{outline:2px solid var(--series);outline-offset:-2px}
-input[type=date]{
+input[type=date],select{
   font:inherit;font-size:12.5px;padding:6px 8px;border-radius:var(--r-sm);
   border:1px solid var(--line);background:var(--plane);color:var(--ink-2);
 }
-input[type=date]:focus-visible{outline:2px solid var(--series);outline-offset:-1px}
+input[type=date]:focus-visible,select:focus-visible{outline:2px solid var(--series);outline-offset:-1px}
+select{font-variant-numeric:tabular-nums;cursor:pointer;max-width:110px}
+select:hover{border-color:var(--axis)}
+.grp .arrow{color:var(--muted);font-size:12px}
+#scAll{padding:6px 9px;font-size:11.5px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
 .chip{
   font-size:11.5px;color:var(--muted);background:var(--plane);
@@ -159,11 +163,9 @@ input[type=date]:focus-visible{outline:2px solid var(--series);outline-offset:-1
 }
 .card h3{margin:0;font-size:13.5px;font-weight:600;letter-spacing:-.005em}
 .card h3 .sym{color:var(--muted);font-weight:500}
-.cardhead{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--s4)}
-.cardhead .cap{margin-bottom:0}
-.seg.small button{padding:4px 10px;font-size:11.5px}
 .cap{color:var(--muted);font-size:12px;margin:3px 0 var(--s3);line-height:1.5}
 .cap .bad{color:var(--danger)}
+.cap .scnote{color:var(--series-ink);font-weight:500}
 .plot{display:block;width:100%;overflow:visible}
 .plot:focus{outline:none}
 .plot:focus-visible{outline:2px solid var(--series);outline-offset:3px;border-radius:var(--r-sm)}
@@ -299,6 +301,13 @@ td.mini{width:140px}
         </div>
         <input type="date" id="refDate" aria-label="Reference date for daylight saving">
       </div>
+      <div class="grp hidden" id="scaleGrp">
+        <span class="lbl" id="scLbl">Scale from</span>
+        <select id="scFrom" aria-labelledby="scLbl"></select>
+        <span class="arrow" aria-hidden="true">&rarr;</span>
+        <select id="scTo" aria-label="Scale range, last bucket"></select>
+        <button id="scAll" class="hidden">Full session</button>
+      </div>
       <div class="chips" id="meta"></div>
     </div>
 
@@ -311,22 +320,14 @@ td.mini{width:140px}
 
       <div class="card">
         <h3 id="lineTitle">Cumulated volume</h3>
-        <div class="cap">Share of the day traded up to each bucket. <span id="tzNote1"></span></div>
+        <div class="cap">Share of the day traded up to each bucket. <span id="tzNote1"></span> <span id="scNote1" class="scnote"></span></div>
         <svg id="lineSvg" class="plot" tabindex="0" role="img" aria-label="Cumulated volume curve"></svg>
         <div class="tip" id="lineTip" role="status" aria-live="off"></div>
       </div>
 
       <div class="card">
-        <div class="cardhead">
-          <div>
-            <h3 id="barTitle">Volume per bucket</h3>
-            <div class="cap">Share traded inside each bucket. <span id="tzNote2"></span></div>
-          </div>
-          <div class="seg small hidden" id="yscale" role="group" aria-label="Vertical scale">
-            <button data-y="full" aria-pressed="true">Full</button><button
-                    data-y="intraday" aria-pressed="false">Intraday</button>
-          </div>
-        </div>
+        <h3 id="barTitle">Volume per bucket</h3>
+        <div class="cap">Share traded inside each bucket. <span id="tzNote2"></span> <span id="scNote2" class="scnote"></span></div>
         <svg id="barSvg" class="plot" tabindex="0" role="img" aria-label="Volume per bucket"></svg>
         <div class="tip" id="barTip" role="status" aria-live="off"></div>
       </div>
@@ -654,7 +655,13 @@ function applyTimes(g){
 /* =========================================================================
    3. State and file intake
    ========================================================================= */
-let DATA = null, CUR = null, HOVER = -1, active = 0, matches = [], SORT = { k: "time", dir: 1 }, YSCALE = "full";
+let DATA = null, CUR = null, HOVER = -1, active = 0, matches = [], SORT = { k: "time", dir: 1 };
+
+/* The bucket window both vertical scales are computed from. null is the whole
+   session. Held as row indices, not times, so it survives a zone change and
+   stays unambiguous when buckets wrap past midnight. */
+let RANGE = null, RANGE_KEY = "";
+const scaleRows = rows => (RANGE ? rows.slice(RANGE.a, RANGE.b + 1) : rows);
 
 function showErr(msg){
   const e = $("err");
@@ -681,10 +688,12 @@ function resetDrop(){
 
 function boot(data, filename){
   DATA = data; CUR = null; HOVER = -1;
+  RANGE = null; RANGE_KEY = "";
   resetDrop();
   $("dropZone").classList.add("hidden");
   $("app").classList.remove("hidden");
   $("result").classList.add("hidden");
+  $("scaleGrp").classList.add("hidden");
   $("pickMsg").classList.remove("hidden");
   $("btnNew").classList.remove("hidden");
   $("btnCsv").classList.add("hidden");
@@ -826,8 +835,19 @@ function drawLine(){
   svg.innerHTML = "";
   const g = geom(svg), n = rows.length, bw = g.PW / n;
   const X = i => g.PAD.l + (i + 0.5) * bw;
-  const Y = v => g.PAD.t + g.PH - (v / 100) * g.PH;
-  G.line = { g, X, Y, bw, val: r => r.cum };
+
+  // The window's own reach sets the ceiling, so a range early in the session
+  // spreads a few percent over the full height instead of hugging the baseline.
+  const winCum = scaleRows(rows).reduce((m, r) => Math.max(m, r.cum), 0);
+  const sc = RANGE && winCum > 0 ? niceScale(winCum) : null;
+  const top = sc ? Math.min(100, sc.top) : 100, step = sc ? sc.step : 25;
+  const dec = Number.isInteger(step) ? 0 : step >= 0.1 ? 1 : 2;
+  const Y = v => g.PAD.t + g.PH - (v / top) * g.PH;
+  G.line = { g, X, Y, bw, lo: 0, hi: n - 1, val: r => r.cum };      // the curve always shows the whole session
+
+  const clip = el("clipPath", { id: "clipLine" });
+  clip.appendChild(el("rect", { x: g.PAD.l, y: g.PAD.t, width: g.PW, height: g.PH }));
+  svg.appendChild(clip);
 
   // the pre-open stretch, where the curve is flat by construction
   const first = rows.findIndex(r => r.delta > 0);
@@ -838,37 +858,61 @@ function drawLine(){
   }
 
   const yt = el("g", { class: "yticks" });
-  for (let v = 0; v <= 100; v += 25){
+  for (let v = 0; v <= top + 1e-9; v += step){
     svg.appendChild(el("line", { class: "gridline", x1: g.PAD.l, x2: g.PAD.l + g.PW, y1: Y(v), y2: Y(v) }));
-    yt.appendChild(el("text", { class: "tick y", x: g.PAD.l - 8, y: Y(v) + 4 }, v + "%"));
+    yt.appendChild(el("text", { class: "tick y", x: g.PAD.l - 8, y: Y(v) + 4 }, fmt(v, dec) + "%"));
   }
   svg.appendChild(yt);
   svg.appendChild(el("line", { class: "axisline", x1: g.PAD.l, x2: g.PAD.l + g.PW, y1: Y(0), y2: Y(0) }));
 
+  // series and reference are clipped to the plot, so a windowed ceiling cuts them
+  // at the axis rather than letting them run over the title
+  const plot = el("g", { "clip-path": "url(#clipLine)" });
   let d = "", area = "M" + X(0) + "," + Y(0);
   rows.forEach((r, i) => { d += (i ? "L" : "M") + X(i) + "," + Y(r.cum); area += "L" + X(i) + "," + Y(r.cum); });
   area += "L" + X(n - 1) + "," + Y(0) + "Z";
-  svg.appendChild(el("path", { class: "series-area", d: area }));
+  plot.appendChild(el("path", { class: "series-area", d: area }));
 
   // even-pace reference: what a flat, volume-blind schedule would trace.
   // Drawn over the fill so its halo works, under the series line so data stays on top.
   const i0 = Math.max(0, first - 1);
+  const pace = i => (i - i0) / (n - 1 - i0) * 100;
   if (n - i0 > 4){
-    svg.appendChild(el("line", { class: "ref", x1: X(i0), y1: Y(0), x2: X(n - 1), y2: Y(100) }));
-    if (!g.tight){                                    // label mid-line, clear of the endpoint value
-      const mid = Math.round(i0 + (n - 1 - i0) * 0.62);
-      svg.appendChild(el("text", { class: "reflab", x: X(mid) + 6,
-        y: Y((mid - i0) / (n - 1 - i0) * 100) + 14 }, "even pace"));
+    plot.appendChild(el("line", { class: "ref", x1: X(i0), y1: Y(0), x2: X(n - 1), y2: Y(100) }));
+    // 0.62 along whatever part of the pace line is still on screen, so the label
+    // follows it under a windowed ceiling instead of drifting off the top
+    const mid = Math.round(i0 + (n - 1 - i0) * Math.min(1, top / 100) * 0.62);
+    if (!g.tight && mid > i0 + 1){                    // label mid-line, clear of the endpoint value
+      plot.appendChild(el("text", { class: "reflab", x: X(mid) + 6, y: Y(pace(mid)) + 14 }, "even pace"));
     }
   }
-  svg.appendChild(el("path", { class: "series-line", d: d }));
+  plot.appendChild(el("path", { class: "series-line", d: d }));
+  svg.appendChild(plot);
 
   xTicks(rows, g).forEach(o => svg.appendChild(el("text", { class: "tick x", x: X(o.i), y: g.H - 10 }, o.r.label)));
 
   const last = rows[n - 1];
-  svg.appendChild(el("circle", { class: "dot", cx: X(n - 1), cy: Y(last.cum), r: 4 }));
-  svg.appendChild(el("text", { class: "endlab", x: X(n - 1) - 8, "text-anchor": "end",
-    y: Math.max(g.PAD.t + 11, Y(last.cum) - 10) }, fmt(last.cum, 1) + "%"));
+  if (last.cum <= top){
+    svg.appendChild(el("circle", { class: "dot", cx: X(n - 1), cy: Y(last.cum), r: 4 }));
+    svg.appendChild(el("text", { class: "endlab", x: X(n - 1) - 8, "text-anchor": "end",
+      y: Math.max(g.PAD.t + 11, Y(last.cum) - 10) }, fmt(last.cum, 1) + "%"));
+  } else {
+    // the curve leaves a windowed ceiling: break it where it crosses and state
+    // where it really ends, so the cut can never read as the end of the day
+    const j = rows.findIndex(r => r.cum > top), p = rows[j - 1];
+    const xc = p ? X(j - 1) + (top - p.cum) / (rows[j].cum - p.cum) * (X(j) - X(j - 1)) : X(j);
+    const y = g.PAD.t + 5;
+    svg.appendChild(el("path", { class: "brk", fill: "none",
+      d: "M" + (xc - 8) + "," + (y + 4) + "L" + (xc + 8) + "," + (y - 2) +
+         "M" + (xc - 8) + "," + (y + 9) + "L" + (xc + 8) + "," + (y + 3) }));
+    const near = xc > g.PAD.l + g.PW - 72;
+    svg.appendChild(el("text", { class: "endlab", "text-anchor": near ? "end" : "start",
+      x: xc + (near ? -12 : 12), y: g.PAD.t + 11 }, "ends " + fmt(last.cum, 1) + "%"));
+  }
+  $("scNote1").textContent = !RANGE ? ""
+    : !sc ? "No volume inside " + rangeSpan() + ", so the session scale is kept."
+    : "Axis capped at " + fmt(top, dec) + "%, taken from " + rangeSpan()
+      + (last.cum > top ? "; the curve breaks where it leaves the axis." : ".");
 
   const cross = el("g", { class: "xhair", opacity: 0 });
   cross.appendChild(el("line", { class: "cross", y1: g.PAD.t, y2: g.PAD.t + g.PH }));
@@ -885,29 +929,29 @@ function drawLine(){
 
 /* ---------- share per bucket ---------- */
 function drawBars(){
-  const svg = $("barSvg"), rows = CUR.rows;
+  const svg = $("barSvg"), all = CUR.rows;
   svg.innerHTML = "";
+
+  // Only the window's own buckets are drawn, so the x-axis follows the scale and
+  // the tallest bar on screen sets the ceiling. Row indices stay global - `off`
+  // shifts them into plot space - because hover and the table key off them.
+  const off = RANGE ? RANGE.a : 0, rows = scaleRows(all);
   const g = geom(svg), n = rows.length, bw = g.PW / n;
   const peakV = Math.max(...rows.map(r => r.delta));
-
-  // A closing auction can be 20%+ of the day, which flattens every intraday bar.
-  // Offer an intraday scale only when one bucket genuinely dwarfs the rest.
-  const sorted = rows.filter(r => r.delta > 0).map(r => r.delta).sort((a, b) => a - b);
-  const q = p => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : 0;
-  const outlier = sorted.length > 8 && peakV > 4 * q(0.9);
-  $("yscale").classList.toggle("hidden", !outlier);
-  const clipTo = outlier && YSCALE === "intraday" ? q(0.95) * 1.15 : peakV;
-  const { top, step } = niceScale(clipTo);
+  const { top, step } = niceScale(peakV);
   const dec = Number.isInteger(step) ? 0 : step >= 0.1 ? 1 : 2;   // a 2.5 step must not print as "3"
-  const X = i => g.PAD.l + (i + 0.5) * bw;
+  const X = i => g.PAD.l + (i - off + 0.5) * bw;
   const Y = v => g.PAD.t + g.PH - (v / top) * g.PH;
-  G.bar = { g, X, Y, bw, val: r => r.delta };
+  G.bar = { g, X, Y, bw, lo: off, hi: off + n - 1, val: r => r.delta };
 
   const first = rows.findIndex(r => r.delta > 0);
   if (first > 0){
-    const w = X(first) - bw / 2 - g.PAD.l;
+    const w = X(off + first) - bw / 2 - g.PAD.l;
     svg.appendChild(el("rect", { class: "preopen", x: g.PAD.l, y: g.PAD.t, width: Math.max(0, w), height: g.PH }));
   }
+  $("scNote2").textContent = !RANGE ? ""
+    : peakV > 0 ? "Showing " + rangeSpan() + " only, " + n + " of " + all.length + " buckets."
+      : "No volume trades in " + rangeSpan() + ".";
 
   const yt = el("g", { class: "yticks" });
   for (let v = 0; v <= top + 1e-9; v += step){
@@ -921,48 +965,41 @@ function drawBars(){
 
   const w = Math.max(1.5, bw - 2);                                  // 2px surface gap between bars
   const bars = el("g", { class: "bars" });
-  const clipped = [];
-  let peakI = 0;
-  rows.forEach((r, i) => {
-    if (r.delta === peakV && !peakI) peakI = i;
+  rows.forEach((r, k) => {                                          // no bar can outrun a ceiling taken from the bars themselves
     if (r.delta <= 0) return;
-    const x = X(i) - w / 2;
-    if (r.delta > top){                                             // runs off the top: flat end + break marks
-      const yTop = g.PAD.t + 15;
-      bars.appendChild(el("path", { class: "bar", "data-i": i, d: barPath(x, yTop, w, g.PAD.t + g.PH - yTop, 0) }));
-      clipped.push({ i, x, yTop, v: r.delta });
-    } else {
-      bars.appendChild(el("path", { class: "bar", "data-i": i,
-        d: barPath(x, Y(r.delta), w, (r.delta / top) * g.PH, 3.5) }));
-    }
+    bars.appendChild(el("path", { class: "bar", "data-i": off + k,
+      d: barPath(X(off + k) - w / 2, Y(r.delta), w, (r.delta / top) * g.PH, 3.5) }));
   });
   svg.appendChild(bars);
 
-  clipped.forEach(c => {
-    const y = c.yTop + 7, o = Math.min(w / 2 + 2, 9);
-    svg.appendChild(el("path", { class: "brk", fill: "none",
-      d: "M" + (c.x - 2) + "," + (y + 4) + "L" + (c.x + w + 2) + "," + (y - 2) +
-         "M" + (c.x - 2) + "," + (y + 9) + "L" + (c.x + w + 2) + "," + (y + 3) }));
-    svg.appendChild(el("text", { class: "endlab", "text-anchor": X(c.i) > g.PAD.l + g.PW - 52 ? "end" : "middle",
-      x: X(c.i) + (X(c.i) > g.PAD.l + g.PW - 52 ? w / 2 : 0), y: g.PAD.t + 8 }, fmt(c.v) + "%"));
-  });
-
-  // average-bucket reference, over the bars so the line reads and its label keeps its halo
-  const live = rows.filter(r => r.delta > 0);
+  // Average-bucket reference, over the bars so the line reads and its label keeps
+  // its halo. Always the whole session's average, not the window's, so it stays
+  // the same day-level benchmark whatever is on screen - which can put it above
+  // a narrow window's ceiling, and then it is stated rather than drawn.
+  const live = all.filter(r => r.delta > 0);
   const avg = live.length ? live.reduce((s, r) => s + r.delta, 0) / live.length : 0;
+  const peakI = peakV > 0 ? off + rows.findIndex(r => r.delta === peakV) : -1;
   if (avg > 0){
-    svg.appendChild(el("line", { class: "ref", x1: g.PAD.l, x2: g.PAD.l + g.PW, y1: Y(avg), y2: Y(avg) }));
+    const onScale = avg <= top;
+    if (onScale)
+      svg.appendChild(el("line", { class: "ref", x1: g.PAD.l, x2: g.PAD.l + g.PW, y1: Y(avg), y2: Y(avg) }));
     if (!g.tight){                          // annotate in the headroom, never on top of the bars
       const ly = g.PAD.t + 9;
-      svg.appendChild(el("line", { class: "ref", x1: g.PAD.l + 5, x2: g.PAD.l + 19, y1: ly - 4, y2: ly - 4 }));
-      svg.appendChild(el("text", { class: "reflab", x: g.PAD.l + 24, y: ly },
-        "average bucket  " + fmt(avg) + "%"));
+      // the peak's value label shares this row, so sit at the opposite end of it
+      const right = peakI >= 0 && X(peakI) < g.PAD.l + g.PW / 2;
+      const edge = right ? g.PAD.l + g.PW : g.PAD.l, dir = right ? -1 : 1;
+      if (onScale)
+        svg.appendChild(el("line", { class: "ref", y1: ly - 4, y2: ly - 4,
+          x1: edge + dir * 5, x2: edge + dir * 19 }));
+      svg.appendChild(el("text", { class: "reflab", "text-anchor": right ? "end" : "start",
+        x: edge + dir * (onScale ? 24 : 5), y: ly },
+        "average bucket  " + fmt(avg) + "%" + (onScale ? "" : ", above this axis")));
     }
   }
 
-  xTicks(rows, g).forEach(o => svg.appendChild(el("text", { class: "tick x", x: X(o.i), y: g.H - 10 }, o.r.label)));
+  xTicks(rows, g).forEach(o => svg.appendChild(el("text", { class: "tick x", x: X(off + o.i), y: g.H - 10 }, o.r.label)));
 
-  if (peakV > 0 && peakV <= top){                                   // label the peak (unless already clipped)
+  if (peakI >= 0){
     const near = X(peakI) > g.PAD.l + g.PW - 52;
     svg.appendChild(el("text", { class: "endlab", "text-anchor": near ? "end" : "middle",
       x: X(peakI) + (near ? w / 2 : 0), y: Math.max(g.PAD.t + 11, Y(peakV) - 8) }, fmt(peakV) + "%"));
@@ -981,24 +1018,34 @@ function drawBars(){
 
 function chartSummary(kind){
   const rows = CUR.rows, live = rows.filter(r => r.delta > 0);
-  const peak = rows.reduce((a, b) => (b.delta > a.delta ? b : a), rows[0]);
   const who = (CUR.fidessa || CUR.reuters) + " on " + (CUR.venue || "the venue");
-  return kind === "cumulated"
-    ? "Cumulated volume for " + who + ", " + (live.length ? live[0].label + " to " + rows[rows.length - 1].label : "")
+  if (kind === "cumulated"){
+    return "Cumulated volume for " + who + ", " + (live.length ? live[0].label + " to " + rows[rows.length - 1].label : "")
       + ", reaching 100% of the day. Half the volume trades by " + ((rows.find(r => r.cum >= 50) || {}).label || "n/a") + "."
-    : "Volume per bucket for " + who + ". The largest bucket is " + peak.label + " at " + fmt(peak.delta) + "% of the day.";
+      + (RANGE ? " The vertical scale is taken from " + rangeSpan() + "." : "");
+  }
+  const shown = scaleRows(rows);                     // the bars only cover the window
+  const peak = shown.reduce((a, b) => (b.delta > a.delta ? b : a), shown[0]);
+  return "Volume per bucket for " + who + (RANGE ? ", showing " + rangeSpan() + " only" : "")
+    + ". The largest bucket shown is " + peak.label + " at " + fmt(peak.delta) + "% of the day.";
 }
 
 /* ---------- one hover model, shared by both charts and the table ---------- */
 function attachHover(svg, key){
-  const geo = G[key];
-  const hit = el("rect", { x: geo.g.PAD.l, y: geo.g.PAD.t, width: geo.g.PW, height: geo.g.PH,
+  const hit = el("rect", { x: G[key].g.PAD.l, y: G[key].g.PAD.t, width: G[key].g.PW, height: G[key].g.PH,
                            fill: "transparent", style: "cursor:crosshair" });
   svg.appendChild(hit);
+
+  // The hit rect is re-made on every redraw, the listeners are not: they read the
+  // live geometry instead of closing over it, or a stale bar-chart window would
+  // map pointer positions to the wrong bucket.
+  if (svg.dataset.hover) return;
+  svg.dataset.hover = "1";
+  const clamp = i => Math.max(G[key].lo, Math.min(G[key].hi, i));   // each chart hovers only what it draws
   const idxAt = e => {
-    const b = svg.getBoundingClientRect();
+    const geo = G[key], b = svg.getBoundingClientRect();
     const px = (e.clientX - b.left) * (geo.g.W / b.width);
-    return Math.max(0, Math.min(CUR.rows.length - 1, Math.floor((px - geo.g.PAD.l) / geo.bw)));
+    return clamp(geo.lo + Math.floor((px - geo.g.PAD.l) / geo.bw));
   };
   svg.addEventListener("mousemove", e => setHover(idxAt(e)));
   svg.addEventListener("mouseleave", () => setHover(-1));
@@ -1009,9 +1056,9 @@ function attachHover(svg, key){
   svg.addEventListener("keydown", e => {
     if (e.key === "ArrowRight" || e.key === "ArrowLeft"){
       e.preventDefault();
-      setHover(Math.max(0, Math.min(CUR.rows.length - 1, (HOVER < 0 ? 0 : HOVER) + (e.key === "ArrowRight" ? 1 : -1))));
-    } else if (e.key === "Home"){ e.preventDefault(); setHover(0); }
-    else if (e.key === "End"){ e.preventDefault(); setHover(CUR.rows.length - 1); }
+      setHover(clamp((HOVER < 0 ? G[key].lo : HOVER) + (e.key === "ArrowRight" ? 1 : -1)));
+    } else if (e.key === "Home"){ e.preventDefault(); setHover(G[key].lo); }
+    else if (e.key === "End"){ e.preventDefault(); setHover(G[key].hi); }
     else if (e.key === "Escape"){ setHover(-1); }
   });
   svg.addEventListener("blur", () => setHover(-1));
@@ -1026,15 +1073,21 @@ function setHover(i){
     const svg = $(key === "line" ? "lineSvg" : "barSvg"), geo = G[key];
     const cross = svg.querySelector(".xhair");
     if (!cross) return;
-    cross.setAttribute("opacity", r ? 1 : 0);
+    const on = !!r && i >= geo.lo && i <= geo.hi;      // the bar chart may not be drawing this bucket
+    cross.setAttribute("opacity", on ? 1 : 0);
     const yt = svg.querySelector(".yticks");           // the value flag sits on top of them
-    if (yt) yt.classList.toggle("faded", !!r);
-    if (r){
+    if (yt) yt.classList.toggle("faded", on);
+    if (on){
       const x = geo.X(i), y = geo.Y(geo.val(r));
       const ln = cross.querySelector("line");
       if (ln){ ln.setAttribute("x1", x); ln.setAttribute("x2", x); }
       const dot = cross.querySelector("circle");
-      if (dot){ dot.setAttribute("cx", x); dot.setAttribute("cy", y); }
+      if (dot){                                        // off-scale points lose the dot; the flag still reads true
+        const cy = Math.max(geo.g.PAD.t, Math.min(geo.g.PAD.t + geo.g.PH, y));
+        dot.setAttribute("cx", x);
+        dot.setAttribute("cy", cy);
+        dot.setAttribute("opacity", cy === y ? 1 : 0);
+      }
       const flag = cross.querySelector(".flag");
       const fy = Math.max(geo.g.PAD.t, Math.min(geo.g.PAD.t + geo.g.PH - 16, y - 8));
       flag.setAttribute("transform", "translate(0," + fy + ")");
@@ -1045,9 +1098,10 @@ function setHover(i){
 
   // bar emphasis: a wash column behind the hovered bar, not 77 dimmed neighbours
   const barSvg = $("barSvg"), band = barSvg.querySelector(".bandlayer");
+  const inBars = !!r && i >= G.bar.lo && i <= G.bar.hi;
   if (band){
     band.innerHTML = "";
-    if (r){
+    if (inBars){
       const geo = G.bar;
       band.appendChild(el("rect", { class: "hoverband", x: geo.X(i) - geo.bw / 2,
         y: geo.g.PAD.t, width: geo.bw, height: geo.g.PH }));
@@ -1069,7 +1123,8 @@ function setHover(i){
     '<div class="row"><span>Cumulated</span><b>' + fmt(r.cum) + '%</b></div>' +
     '<div class="row"><span>Left to trade</span><b>' + fmt(Math.max(0, 100 - r.cum)) + '%</b></div>';
   place($("lineTip"), $("lineSvg"), G.line, i, body);
-  place($("barTip"),  $("barSvg"),  G.bar,  i, body);
+  if (inBars) place($("barTip"), $("barSvg"), G.bar, i, body);
+  else $("barTip").classList.remove("on");
 }
 
 function place(tip, svg, geo, i, html){
@@ -1128,13 +1183,20 @@ $("tbody").onmouseleave = () => setHover(-1);
 /* =========================================================================
    7. Render
    ========================================================================= */
+/** a bucket's display time, carrying its day marker when the zone shifted it */
+const stampRow = r => r.label + (r.shift ? (r.shift > 0 ? " +" : " ") + r.shift + "d" : "");
+
 function render(g){
   CUR = g; HOVER = -1;
+  if (RANGE_KEY !== g.key){ RANGE = null; RANGE_KEY = g.key; }   // a new instrument starts on the full session
   applyTimes(g);
   const rows = g.rows;
+  if (RANGE && RANGE.b >= rows.length) RANGE = null;
   $("pickMsg").classList.add("hidden");
   $("result").classList.remove("hidden");
   $("btnCsv").classList.remove("hidden");
+  $("scaleGrp").classList.remove("hidden");
+  fillScale(g);                                                  // after applyTimes, so the options carry live labels
 
   const sub = [g.reuters, g.venue].filter(Boolean).join("  ·  ");
   const head = (t) => esc(t) + '  <span class="sym">' + esc(g.fidessa || g.reuters) + (sub ? "  ·  " + esc(sub) : "") + '</span>';
@@ -1155,12 +1217,11 @@ function render(g){
   const gran = live.length > 1 ? live[1].min - live[0].min : 0;
   g.peak = peak;
 
-  const stamp = r => r.label + (r.shift ? (r.shift > 0 ? " +" : " ") + r.shift + "d" : "");
   $("strip").innerHTML = [
-    ["Session", live.length ? stamp(live[0]) + " to " + stamp(rows[rows.length - 1]) : "n/a",
+    ["Session", live.length ? stampRow(live[0]) + " to " + stampRow(rows[rows.length - 1]) : "n/a",
       rows.length + " buckets" + (gran ? "  ·  " + gran + " min" : "")],
-    ["Peak bucket", fmt(peak.delta) + "%", "at " + stamp(peak)],
-    ["50% traded by", half ? stamp(half) : "n/a", "median volume time"],
+    ["Peak bucket", fmt(peak.delta) + "%", "at " + stampRow(peak)],
+    ["50% traded by", half ? stampRow(half) : "n/a", "median volume time"],
     ["Final 30 min", fmt(close30) + "%", "closing share"]
   ].map(([k, v, n]) =>
     '<div><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div><div class="n">' + esc(n) + '</div></div>'
@@ -1202,13 +1263,36 @@ $("bLocal").parentElement.onclick = e => {
   [...b.parentElement.children].forEach(x => x.setAttribute("aria-pressed", x === b));
   if (CUR) render(CUR);
 };
-$("yscale").onclick = e => {
-  const b = e.target.closest("button");
-  if (!b) return;
-  YSCALE = b.dataset.y;
-  [...b.parentElement.children].forEach(x => x.setAttribute("aria-pressed", x === b));
-  if (CUR){ drawBars(); setHover(-1); }
+/* ---------- the scale window ---------- */
+/** offer every bucket of the loaded instrument, and nothing else, as a range end */
+function fillScale(g){
+  const rows = g.rows;
+  const opts = rows.map((r, i) => '<option value="' + i + '">' + esc(stampRow(r)) + '</option>').join("");
+  $("scFrom").innerHTML = $("scTo").innerHTML = opts;
+  $("scFrom").value = RANGE ? RANGE.a : 0;
+  $("scTo").value   = RANGE ? RANGE.b : rows.length - 1;
+  $("scAll").classList.toggle("hidden", !RANGE);
+}
+
+/** the window in display times; each chart captions what it actually did with it */
+const rangeSpan = () => stampRow(CUR.rows[RANGE.a]) + "–" + stampRow(CUR.rows[RANGE.b]);
+
+function setRange(a, b){
+  if (!CUR) return;
+  RANGE = (a === 0 && b === CUR.rows.length - 1) ? null : { a, b };
+  fillScale(CUR);
+  drawLine();
+  drawBars();
+  setHover(-1);
+}
+
+$("scaleGrp").onchange = e => {                    // both selects bubble their change here
+  if (!CUR) return;
+  let a = +$("scFrom").value, b = +$("scTo").value;
+  if (a > b){ if (e.target.id === "scFrom") b = a; else a = b; }   // push the far end rather than reject
+  setRange(a, b);
 };
+$("scAll").onclick = () => { if (CUR) setRange(0, CUR.rows.length - 1); };
 $("refDate").onchange = () => { if (CUR) render(CUR); };
 (() => {
   const n = new Date();

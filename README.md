@@ -13,6 +13,8 @@ via `FileReader` and never leaves the machine.
 1. Open `volume-profile.html` in a browser.
 2. Drop a CSV on the page, or click to browse.
 3. Type an instrument code and press <kbd>Enter</kbd>.
+4. Optionally narrow **Scale from / to** to the buckets the vertical axis should
+   be read against.
 
 `sample_india_volume_profile.csv` is included so you can try it immediately.
 
@@ -67,12 +69,43 @@ zones differ, the table shows both.
   *even pace* line is what a flat, volume-blind schedule would trace, so
   front-loading and back-loading read at a glance.
 - **Volume per bucket**: each bucket's own share, with a dashed *average bucket*
-  reference. Where a closing auction dwarfs the intraday buckets, a
-  **Full / Intraday** control appears and rescales the axis; a bar that runs off
-  the top gets explicit break marks and its true value, so it can never be
-  misread as shorter than it is.
+  reference.
 - The shaded band at the left is the pre-open stretch, where the curve is flat by
   construction.
+
+## Scale window
+
+A closing auction can be 15-20% of the day, which flattens every intraday bar
+against an axis tall enough to hold it. **Scale from / to** picks the stretch of
+the session the vertical axis is computed from - leave the auction out and the
+intraday shape gets the full height.
+
+Both ends are dropdowns of the loaded instrument's own buckets, so the window can
+only ever land on a real bucket; moving one end past the other pushes the other
+along. **Full session** returns to the whole day.
+
+The two charts use the window differently, and each says which in its caption:
+
+- **Volume per bucket** is restricted to it. Only the window's buckets are drawn,
+  the x-axis narrows to them, and the tallest bar on screen sets the ceiling - so
+  nothing there is ever off-scale.
+- **Cumulated volume** keeps the whole session and takes only its ceiling from
+  the window, because that curve is read for its shape. Where it leaves the axis
+  it is cut with break marks and annotated with the close it really reaches. A
+  window ending at the close still needs the full 0-100% axis, so that chart is
+  left alone.
+
+The dashed *average bucket* reference stays the whole session's average whatever
+window is on show, so it remains the same day-level benchmark. When a narrow
+window's ceiling falls below it, the label says so rather than drawing it.
+
+Hovering still syncs both charts and the table. A bucket outside the window has no
+bar to point at, so the bar chart drops its crosshair while the curve and the
+table row keep following it. The bucket table and **Export selection** are always
+the full session.
+
+The window survives a **Local / Source** flip, relabelled into the zone on show.
+Picking another instrument starts again on the full session.
 
 Hovering either chart syncs the crosshair, the bars, and the table row. With a
 chart focused, arrow keys, <kbd>Home</kbd> and <kbd>End</kbd> do the same. Table
