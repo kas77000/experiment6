@@ -18,66 +18,104 @@ via `FileReader` and never leaves the machine.
 
 `sample_india_volume_profile.csv` is included so you can try it immediately.
 
-## Sending one to a client
+## Publishing it to users
 
-Give the client the file **once**. It re-reads the data every time it is opened,
-so it never has to be replaced.
+Hand the file over **once**. It re-reads its data every time it is opened, so it
+never has to be replaced. Edit the `CONFIG` block at the top of the `<script>`
+and send it.
 
-Edit the `CONFIG` block at the top of the `<script>` in `volume-profile.html`:
+### From a shared drive
+
+Put `volume-profile.html` on the share, with the profiles in a folder beside it:
+
+```
+\\server\team\volume-profile.html
+\\server\team\profiles\2026-07-30.js
+```
 
 ```js
 const CONFIG = {
-  url: "https://data.example.com/profiles/{yyyy}-{mm}-{dd}.csv",
+  dataFile: "profiles/{yyyy}-{mm}-{dd}.js",
   select: "RELIANCE.IN",   // "" to land on the picker instead
   lookback: 5,
   timeoutMs: 15000
 };
 ```
 
-That is the whole setup. No build step, no tooling, nothing to install. Send the
-file; publish a new CSV to that address each day and every client sees it on
-their next open. The **Refresh** button re-pulls without reopening.
+Keep the path **relative** and the same file works from `\\server\share` or a
+mapped `Z:\` without change. Drop a new file on the share each morning and
+everyone sees it next time they open the page. No server, no network, no install.
+
+The data has to be published as **JavaScript, not raw CSV**: one line wrapping
+the CSV text.
+
+```js
+VP_PROFILE = "…the whole CSV as a JSON string…";
+```
+
+Built-in PowerShell writes it, so there is nothing to install:
+
+```powershell
+"VP_PROFILE = " + (ConvertTo-Json ([IO.File]::ReadAllText("today.csv"))) + ";" |
+    Set-Content -Encoding utf8 "\\server\team\profiles\2026-07-30.js"
+```
+
+`make-profile-js.ps1` in this repo does the same with argument checking:
+
+```powershell
+.\make-profile-js.ps1 -Csv today.csv -OutDir \\server\team\profiles
+```
+
+Add that line to whatever job already drops the CSV on the share.
+
+> **Why JavaScript and not the CSV directly.** A page opened by double-click runs
+> on `file://`, and browsers refuse to let it read a neighbouring file: `fetch()`
+> does not implement the `file:` scheme at all, `XMLHttpRequest` is blocked, and
+> reading an `<iframe>` is blocked. A `<script>` tag is the one exception, since
+> script loading is exempt from the same-origin check. That is the whole reason
+> for the wrapper, and it is why the earlier auto-load could not work.
+
+### From a web host
+
+If the profiles are on a web server instead, point `url` at the CSV directly and
+skip the wrapper:
+
+```js
+url: "https://data.example.com/profiles/{yyyy}-{mm}-{dd}.csv",
+```
+
+**That host must send `Access-Control-Allow-Origin: *`**, because a
+double-clicked page has origin `null`. S3, CloudFront, Azure Blob, Cloudflare R2,
+GitHub Pages and configured nginx/Apache/IIS qualify. SharePoint, OneDrive and
+anything behind a login do not: use `dataFile` for those. Anything at that URL is
+readable by whoever has it, so use an unguessable path or a signed URL if the
+profiles are not public.
+
+### Either way
 
 | Field | |
 |---|---|
-| `url` | where the CSV lives. `{yyyy}` `{mm}` `{dd}` `{yyyymmdd}` become today's date |
+| `dataFile` | path to the `.js` wrapper, relative to the HTML. For shared drives |
+| `url` | http(s) address of a CSV. Needs the CORS header above |
 | `select` | instrument to open on. Empty lands on the picker, data already loaded |
-| `lookback` | days to walk back when a date is not published yet (weekends, holidays, early mornings) |
-| `timeoutMs` | how long to wait for a slow host |
+| `lookback` | days to walk back when a date is not published: weekends, holidays, mornings before the job runs |
+| `timeoutMs` | how long to wait before giving up |
 
-The header always states which date is on screen, and marks it in red when it is
-older than yesterday, so nobody reads stale data believing it is today's. If the
-address cannot be reached the page says why and falls back to letting the user
+`{yyyy}` `{mm}` `{dd}` `{yyyymmdd}` in either path become the date at the moment
+the page opens.
+
+The header states which date is on screen and turns it red once it is older than
+yesterday, so stale data is never mistaken for today's. **Refresh** re-reads
+without hunting for the file again. If nothing can be loaded the page says
+exactly what it looked for and why it failed, then falls back to letting the user
 open a file by hand.
 
-### The one requirement
+### One-off sends
 
-**The host must send `Access-Control-Allow-Origin: *`.**
-
-A file opened by double-click runs on `file://`, whose origin is `null`. The
-browser blocks it from reading anything unless the server explicitly allows any
-origin. This is not something the page can work around.
-
-- **Works**: S3, CloudFront, Azure Blob, Cloudflare R2, GitHub Pages, any
-  nginx/Apache/IIS with the header configured.
-- **Does not work**: SharePoint, OneDrive, Windows file shares (`\\server\path`),
-  or any endpoint requiring a login. These reject a `null` origin, and no
-  amount of loader code changes that.
-
-That constraint is also why fetching a *local* CSV sitting next to the HTML is
-impossible: `fetch()` does not implement the `file:` scheme at all, and
-`XMLHttpRequest` to a local file is blocked without launching the browser behind
-`--allow-file-access-from-files`.
-
-Anything published at that URL is readable by anyone who has it, so use an
-unguessable path or a signed URL if the profiles are not public.
-
-### If the client has no network
-
-There is a second slot, `<script id="embeddedProfile">` near the top of the file.
-Paste a CSV between its tags and the page opens straight into it with no request
-at all. Data is then fixed at the moment you paste, so this only suits a one-off
-send. It is a plain text paste; no tooling involved.
+There is also `<script id="embeddedProfile">` near the top of the file. Paste a
+CSV between its tags and the page opens straight into it, carrying its own data
+and reading nothing. Fixed at the moment you paste, so it suits a single send
+rather than a daily one.
 
 ## Input format
 

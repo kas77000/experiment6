@@ -384,32 +384,75 @@ td.mini{width:140px}
    is opened. Hand the client the file once; the data stays current because the
    file re-reads the URL, it does not carry a copy.
 
-   url        the profile to load. These tokens are replaced with the date:
-                {yyyy} {mm} {dd}      2026 07 30
-                {yyyymmdd}            20260730
-              so "https://host/profiles/{yyyy}-{mm}-{dd}.csv" fetches today's.
+   Set ONE of dataFile or url. Both understand date tokens, replaced with the
+   date at the moment the page opens:
+
+       {yyyy} {mm} {dd}      2026 07 30
+       {yyyymmdd}            20260730
+
+   ---------------------------------------------------------------------------
+   dataFile   FOR A SHARED DRIVE. A path relative to this HTML file, pointing at
+              a .js wrapper around the profile (see below). Put this file on the
+              share next to the data and it reads it on every open.
+
+                dataFile: "profiles/{yyyy}-{mm}-{dd}.js"
+
+              It is loaded with a <script> tag, which is the one way a page
+              opened by double-click may still read a neighbouring file: script
+              tags are exempt from CORS, whereas fetch() refuses the file:
+              scheme outright and XMLHttpRequest is blocked. Keep the path
+              relative and the same file works from \\server\share or Z:\ alike.
+
+              The data must be JavaScript, not raw CSV. The wrapper is one line
+              around the CSV text:
+
+                VP_PROFILE = "…the whole CSV as a JSON string…";
+
+              Built-in PowerShell writes it, no install needed:
+
+                "VP_PROFILE = " + ((Get-Content in.csv -Raw) | ConvertTo-Json) + ";" `
+                  | Set-Content -Encoding utf8 out.js
+
+   ---------------------------------------------------------------------------
+   url        FOR A WEB HOST. Fetched over http(s).
+
+                url: "https://host/profiles/{yyyy}-{mm}-{dd}.csv"
+
+              THE HOST MUST SEND  Access-Control-Allow-Origin: *  because a
+              double-clicked page has origin "null". S3, Azure Blob, CloudFront,
+              R2, GitHub Pages and configured nginx/Apache/IIS qualify.
+              SharePoint, OneDrive and plain file shares do not: use dataFile
+              for those.
+   ---------------------------------------------------------------------------
+
    select     instrument to open on, e.g. "RELIANCE.IN". Empty means land on
               the picker with the data already loaded.
-   lookback   trading days to walk back if a date is missing (404). Covers
-              weekends, holidays, and mornings before the job has published.
-              The header always states which date is actually on screen.
-   timeoutMs  give up on a slow or unreachable host after this long.
+   lookback   days to walk back when a date is not published: weekends,
+              holidays, mornings before the job has run. The header always
+              states which date is actually on screen.
+   timeoutMs  give up on a slow or unreachable source after this long.
 
-   THE HOST MUST SEND:  Access-Control-Allow-Origin: *
-   A file opened by double-click runs on file://, whose origin is "null", so the
-   browser blocks the read unless the server allows any origin. S3, Azure Blob,
-   CloudFront, Cloudflare R2, GitHub Pages and any nginx/Apache can be set to do
-   this. SharePoint, OneDrive and Windows file shares (\\server\path) cannot, and
-   no change to this file can work around that.
-
-   Leave url empty and the page just asks for a file, as before.
+   Leave both empty and the page just asks for a file, as before.
    =========================================================================== */
 const CONFIG = {
+  dataFile: "",
   url: "",
   select: "",
   lookback: 5,
   timeoutMs: 15000
 };
+
+/* This block gets hand-edited, so tolerate a deleted or mistyped line rather
+   than failing to start. Everything below can assume the shape is right. */
+(() => {
+  const str = k => (typeof CONFIG[k] === "string" ? CONFIG[k].trim() : "");
+  const num = (k, d) => (typeof CONFIG[k] === "number" && isFinite(CONFIG[k]) && CONFIG[k] >= 0 ? CONFIG[k] : d);
+  CONFIG.dataFile  = str("dataFile");
+  CONFIG.url       = str("url");
+  CONFIG.select    = str("select");
+  CONFIG.lookback  = Math.min(60, Math.round(num("lookback", 5)));
+  CONFIG.timeoutMs = Math.max(1000, num("timeoutMs", 15000));
+})();
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -1411,11 +1454,45 @@ function stampUrl(tpl, back){
   };
 }
 
+const isDated = t => /\{yyyy\}|\{mm\}|\{dd\}|\{yyyymmdd\}/.test(t);
+const candidates = tpl => isDated(tpl)
+  ? Array.from({ length: CONFIG.lookback + 1 }, (_, i) => stampUrl(tpl, i))
+  : [{ url: tpl, label: "", back: 0 }];
+
+/** Load one .js wrapper by <script> tag. The only local read a file:// page gets. */
+function loadScriptOnce(src){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    const timer = setTimeout(() => { s.remove(); reject(new Error("timeout")); }, CONFIG.timeoutMs);
+    s.src = src;
+    s.onload = () => { clearTimeout(timer); s.remove(); resolve(); };
+    s.onerror = () => { clearTimeout(timer); s.remove(); reject(new Error("missing")); };
+    document.head.appendChild(s);
+  });
+}
+
+async function scriptProfile(){
+  const tries = candidates(CONFIG.dataFile);
+  for (const t of tries){
+    window.VP_PROFILE = undefined;                  // so a stale global cannot pass as a fresh load
+    // query string is honoured on file:// too, so an updated file is never served from cache
+    const bust = (t.url.includes("?") ? "&" : "?") + "_=" + Date.now();
+    try { await loadScriptOnce(t.url + bust); } catch (e){ continue; }
+    if (typeof window.VP_PROFILE === "string" && window.VP_PROFILE.trim())
+      return { text: window.VP_PROFILE, hit: t };
+    // the file loaded but defined nothing: a wrapper problem, not a missing day
+    throw new Error("Found " + t.url + " but it did not set VP_PROFILE. " +
+                    "The wrapper should read:  VP_PROFILE = \"…csv…\";");
+  }
+  throw new Error("No profile file found next to this page" +
+    (isDated(CONFIG.dataFile) ? " for the last " + (CONFIG.lookback + 1) + " days" : "") +
+    ". Looked for " + candidates(CONFIG.dataFile)[0].url + " relative to this file.");
+}
+
 async function fetchProfile(){
-  const tpl = CONFIG.url.trim();
-  const dated = /\{yyyy|\{mm\}|\{dd\}|\{yyyymmdd\}/.test(tpl);
-  const tries = dated ? Array.from({ length: CONFIG.lookback + 1 }, (_, i) => stampUrl(tpl, i))
-                      : [{ url: tpl, label: "", back: 0 }];
+  const tpl = CONFIG.url;
+  const dated = isDated(tpl);
+  const tries = candidates(tpl);
   let lastStatus = 0;
 
   for (const t of tries){
@@ -1456,7 +1533,7 @@ async function loadRemote(quiet){
     showErr("");
   }
   try {
-    const { text, hit } = await fetchProfile();
+    const { text, hit } = CONFIG.dataFile ? await scriptProfile() : await fetchProfile();
     const wasCur = CUR && (CUR.fidessa || CUR.reuters);
     boot(parseCSV(text), hit.label ? "Profile for " + hit.label : "Latest profile");
     $("btnNew").classList.add("hidden");              // the client is not asked to find anything
@@ -1489,9 +1566,10 @@ async function loadRemote(quiet){
   const slot = $("embeddedProfile");
   const embedded = slot ? slot.textContent.trim() : "";
 
-  if (CONFIG.url && CONFIG.url.trim()){
+  if (CONFIG.dataFile || CONFIG.url){
     $("btnRefresh").classList.remove("hidden");
-    $("btnRefresh").onclick = () => loadRemote(true);
+    // a share-drive reload has to be a full reload: a <script> already run cannot be re-run
+    $("btnRefresh").onclick = () => CONFIG.dataFile ? location.reload() : loadRemote(true);
     loadRemote(false);
     return;
   }
