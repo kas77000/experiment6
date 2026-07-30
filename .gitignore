@@ -1,0 +1,17 @@
+# Source screenshots / photos: may contain real export data, keep them local
+*.HEIC
+*.heic
+*.jpg
+*.jpeg
+*.png
+
+# Real profile exports: only the synthetic sample is tracked
+*.csv
+!sample_india_volume_profile.csv
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
