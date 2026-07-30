@@ -27,11 +27,20 @@ Build it:
 .\build-single-file.ps1 -Csv "\\server\team\profiles\profile.csv"
 ```
 
-That produces `Volume-Profile.bat`, about 70 KB, with the whole viewer folded
-inside it. Hand that one file out. Run the build again whenever
-`volume-profile.html` changes.
+```
+wrote C:\...\Volume-Profile.bat
+  69 KB, one file, nothing else needed
+  reads: \\server\team\profiles\profile.csv
 
-The share path can also be edited afterwards: it is the first line of the file.
+  Ready to hand out.
+```
+
+That is `Volume-Profile.bat`, about 70 KB, with the whole viewer folded inside
+it. Hand that one file out. The path it will read is echoed back so it can be
+checked before sending; leave `-Csv` off and it says the placeholder is still in
+there rather than letting it through.
+
+The path can also be edited afterwards. It is the one line near the top:
 
 ```bat
 set "VP_CSV=\\server\team\profiles\profile.csv"
@@ -44,13 +53,61 @@ replaced. A mapped drive (`Z:\profiles\profile.csv`) works the same way.
 If the share is unreachable, or the file is not a volume profile, the window
 stays open with the reason.
 
+### Rebuilding after a change
+
+Three files feed the build, and they own different things:
+
+| File | Owns |
+|---|---|
+| `volume-profile.html` | the page: charts, table, styling |
+| `launcher/single-file-template.bat` | the launcher: config line, error messages, where the merged page is written |
+| `build-single-file.ps1` | joining the two, and the checks below |
+
+Change either of the first two and re-run the build. Deleting
+`Volume-Profile.bat` first costs nothing: it is an output, not a source, and is
+not tracked here.
+
+The launcher calls into the viewer, so the build refuses to produce a file that
+would break on a client's screen. It checks that the viewer still provides
+`boot(`, `parseCSV(`, `showErr(`, `pick(`, `id="btnNew"`, `id="fileSub"` and
+`</body>`, and that it contains neither of the `#PS-BEGIN` / `#PS-END` markers.
+A rename is reported with what the name was for:
+
+```
+volume-profile.html no longer provides what the launcher calls:
+  function boot(   (boot(), which loads a parsed profile)
+
+Either restore those names, or update the driver in launcher\single-file-template.bat.
+```
+
+The finished file is then read back and checked: it starts with `@echo`, carries
+no byte-order mark, has the PowerShell section in the right order, and has the
+viewer attached and complete. If any of that fails the output is deleted rather
+than left on the bench.
+
+So: styling, layout and chart changes are always safe. Renaming those functions
+or element ids is caught at build time, not in front of a client.
+
 ### How it works
 
-`cmd` runs the few lines at the top and exits before reaching the rest.
-PowerShell then re-reads the file, takes its own section from between the
-markers and the viewer from after the last one, appends the CSV to it as a short
-script, writes the result to `%LOCALAPPDATA%\VolumeProfile\volume-profile.html`
-and opens it.
+`Volume-Profile.bat` is three things in one file:
+
+```
+line   1-27    batch: the config line, then start PowerShell and exit
+line  29-103   the PowerShell that does the work
+line 104-end   volume-profile.html, verbatim
+```
+
+`cmd` runs to the `exit` on line 27 and never reaches the rest. PowerShell then
+re-reads the file, takes its own section from between the `#PS-BEGIN` /
+`#PS-END` markers and the viewer from after `<!--HTML-BEGIN-->`, appends the CSV
+to the viewer as a short script, writes the result to
+`%LOCALAPPDATA%\VolumeProfile\volume-profile.html` and opens it. That output path
+is fixed and overwritten each run, so the browser keeps a stable address and
+nothing accumulates.
+
+The file is written UTF-8 with no byte-order mark and CRLF endings: a BOM at byte
+0 makes `cmd` fail on the first line.
 
 `volume-profile.html` plays no part in this and contains no loading code at all.
 It is the plain choose-a-file page. The launcher appends its own `<script>` after
