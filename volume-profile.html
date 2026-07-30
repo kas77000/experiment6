@@ -355,6 +355,57 @@ td.mini{width:140px}
 
 <script>
 "use strict";
+
+/* =========================================================================
+   0. CONFIGURATION - opening the daily file without being asked
+   =========================================================================
+
+   OFF by default. Empty string means the viewer starts on the drop zone, and
+   the CSV is opened by hand as it always has been.
+
+   Give AUTOLOAD a path and the viewer tries to read it once on load. Success
+   lands you straight on the instrument picker; any failure falls back to the
+   drop zone, so a wrong or stale path can never lock anyone out.
+
+   Paste a Windows path as you would type it in Explorer - backslashes, drive
+   letters and UNC all get converted for you, and spaces are handled:
+
+     "Z:\\profiles\\profile.csv"                    mapped share drive
+     "\\\\fileserver\\quant\\profiles\\profile.csv"    UNC share
+     "C:\\Users\\me\\Desktop\\profile.csv"            local desktop
+     "profiles/profile.csv"                       beside this HTML file
+     "https://intranet/profiles/today.csv"        intranet web server
+
+   {YYYY} {MM} {DD} become today's date, for a file written fresh each day:
+
+     "Z:\\profiles\\profile_{YYYY}{MM}{DD}.csv"
+
+   A list may be given instead, and each is tried in turn until one loads -
+   useful for a share path with a local fallback:
+
+     const AUTOLOAD = ["Z:\\profiles\\profile_{YYYY}{MM}{DD}.csv",
+                       "C:\\Users\\me\\Desktop\\profile.csv"];
+
+   TO TRY A PATH WITHOUT EDITING THIS FILE, put it in the address bar:
+
+     volume-profile.html?autoload=Z:\\profiles\\profile.csv
+
+   which overrides the setting below for that one visit.
+
+   WHEN IT CAN ACTUALLY WORK. A page opened from a file:// URL - anything
+   double-clicked - is not allowed by the browser to read another file on disk
+   or on a share. No code here can change that, and the viewer will say so
+   plainly rather than blame your path. A local path only loads if:
+
+     - the browser was started with --allow-file-access-from-files (see the
+       shortcut in the README's "Auto-loading" section); or
+     - the viewer itself is reached over http(s) rather than double-clicked.
+
+   An https:// path works from a double-clicked page only if that server sends
+   Access-Control-Allow-Origin. */
+
+const AUTOLOAD = "";
+
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const pad2 = n => String(n).padStart(2, "0");
@@ -695,6 +746,98 @@ function readFile(file){
 function resetDrop(){
   $("dropTitle").textContent = "Drop a volume profile CSV";
   $("dropSub").textContent = "or click to browse. The file stays on this machine.";
+}
+
+/* ---------- the configured daily file (see section 0) ---------- */
+
+/** today's date folded in, then a Windows path turned into a URL the browser takes */
+function autoUrl(p){
+  const n = new Date();
+  let s = String(p).trim()
+    .replace(/\{YYYY\}/g, n.getFullYear())
+    .replace(/\{MM\}/g, pad2(n.getMonth() + 1))
+    .replace(/\{DD\}/g, pad2(n.getDate()));
+  if (/^\\\\/.test(s))                 s = "file://" + s.slice(2).replace(/\\/g, "/");  // \\server\share
+  else if (/^[a-zA-Z]:[\\/]/.test(s))  s = "file:///" + s.replace(/\\/g, "/");          // Z:\dir, C:\Users
+  // only the characters a pasted Windows path really trips on, so an already
+  // encoded URL is not encoded a second time
+  return s.replace(/ /g, "%20").replace(/#/g, "%23");
+}
+
+/** the paths to try: ?autoload= in the address wins, so a path can be tried without editing */
+function autoList(){
+  const q = /[?&]autoload=([^&]*)/.exec(location.search);
+  const src = q ? [decodeURIComponent(q[1].replace(/\+/g, " "))]
+                : (Array.isArray(AUTOLOAD) ? AUTOLOAD : [AUTOLOAD]);
+  return src.map(s => String(s).trim()).filter(Boolean).map(autoUrl);
+}
+
+/** Is this page allowed to read local files at all? A file: page that cannot even
+    read its own file is blocked outright, which tells a refusal apart from a
+    wrong path. Never rejects. */
+function canReadLocal(){
+  return new Promise(res => {
+    if (location.protocol !== "file:") return res(true);
+    try {
+      const x = new XMLHttpRequest();
+      x.open("GET", location.href);
+      x.onload = () => res(x.status === 200 || !!x.responseText);
+      x.onerror = () => res(false);
+      x.send();
+    } catch (e){ res(false); }
+  });
+}
+
+/** read the path once, however this page happens to be served */
+function readPath(url){
+  return new Promise((resolve, reject) => {
+    // XHR can sometimes reach a sibling local file; fetch() refuses file: outright
+    const viaXhr = () => {
+      try {
+        const x = new XMLHttpRequest();
+        x.open("GET", url);
+        x.onload = () => {
+          // a file: read that worked reports status 0, not 200
+          if (x.status === 200 || (x.status === 0 && x.responseText)) resolve(x.responseText);
+          else reject(new Error(x.status ? "HTTP " + x.status : "empty response"));
+        };
+        x.onerror = () => reject(new Error("unreachable"));
+        x.send();
+      } catch (e){ reject(e); }
+    };
+    if (location.protocol === "file:") return viaXhr();
+    fetch(url, { cache: "no-store" })
+      .then(r => (r.ok ? r.text() : Promise.reject(new Error("HTTP " + r.status))))
+      .then(resolve, viaXhr);
+  });
+}
+
+function autoLoad(){
+  const list = autoList();
+  if (!list.length) return;
+  $("dropTitle").textContent = "Looking for the daily profile";
+  $("dropSub").textContent = list.join("  or  ");
+
+  const attempt = i => i >= list.length
+    ? Promise.reject()
+    : readPath(list[i]).then(txt => ({ txt, url: list[i] }), () => attempt(i + 1));
+
+  attempt(0).then(
+    hit => {
+      try { boot(parseCSV(hit.txt), hit.url.split(/[\\/]/).pop()); }
+      catch (e){ resetDrop(); showErr(hit.url + " - " + e.message); }   // found but unreadable: worth flagging
+    },
+    // Nothing loaded. Say which it was - a browser refusing local reads, or a
+    // path that is simply not there - so a test of the setting is conclusive.
+    () => canReadLocal().then(allowed => {
+      const localTarget = list.some(u => /^file:/.test(u)) || location.protocol === "file:";
+      resetDrop();
+      $("dropSub").innerHTML = (!allowed && localTarget)
+        ? "<b>This browser will not let a double-clicked page read local files</b>, so "
+          + esc(list.join(" or ")) + " could not even be tried - the path itself may be perfectly correct. "
+          + "See Auto-loading in the README. Drop a CSV below to carry on."
+        : "Could not read " + esc(list.join(" or ")) + ". Drop a CSV, or click to browse.";
+    }));
 }
 
 function boot(data, filename){
@@ -1322,6 +1465,8 @@ const setTheme = t => {
 };
 $("btnTheme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 setTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+
+autoLoad();      // no-op unless a path is configured or passed as ?autoload=; drop zone is the fallback
 </script>
 </body>
 </html>
