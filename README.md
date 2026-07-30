@@ -11,104 +11,12 @@ via `FileReader` and never leaves the machine.
 ## Use it
 
 1. Open `volume-profile.html` in a browser.
-2. Drop a CSV on the page, or click to browse. If the daily file is configured
-   and reachable, this step happens by itself - see [Auto-loading](#auto-loading).
+2. Drop a CSV on the page, or click to browse.
 3. Type an instrument code and press <kbd>Enter</kbd>.
 4. Optionally narrow **Scale from / to** to the buckets the vertical axis should
    be read against.
 
 `sample_india_volume_profile.csv` is included so you can try it immediately.
-
-## Auto-loading
-
-**Off by default**, and the default is deliberate - see the limitation below. As
-shipped, the viewer starts on the drop zone and the CSV is opened by hand.
-
-The switch is one line near the top of the `<script>` in `volume-profile.html`,
-section `0. CONFIGURATION`, currently line 387:
-
-```js
-const AUTOLOAD = "";
-```
-
-Give it a path and the viewer tries to read it once on load. Success lands you on
-the instrument picker with no upload step; any failure falls back to the drop
-zone, so a wrong or stale path can never lock anyone out.
-
-Paste a Windows path exactly as Explorer shows it - drive letters, backslashes,
-UNC and spaces are all converted for you:
-
-```js
-const AUTOLOAD = "Z:\\profiles\\profile.csv";                  // mapped share drive
-const AUTOLOAD = "\\\\fileserver\\quant\\profiles\\profile.csv";  // UNC share
-const AUTOLOAD = "C:\\Users\\me\\Desktop\\profile.csv";          // local desktop
-const AUTOLOAD = "profiles/profile.csv";                     // beside this HTML file
-const AUTOLOAD = "https://intranet/profiles/today.csv";      // intranet web server
-```
-
-`{YYYY}`, `{MM}` and `{DD}` become today's date, for a file written fresh daily:
-`"Z:\\profiles\\profile_{YYYY}{MM}{DD}.csv"`. A list may be given instead and each is
-tried in turn until one loads, so a share path can have a local fallback:
-
-```js
-const AUTOLOAD = ["Z:\\profiles\\profile_{YYYY}{MM}{DD}.csv",
-                  "C:\\Users\\me\\Desktop\\profile.csv"];
-```
-
-### Trying a path without editing the file
-
-Append `?autoload=` to the address:
-
-```
-volume-profile.html?autoload=Z:\profiles\profile.csv
-```
-
-That overrides the setting for one visit, which is the quick way to find out
-whether a path works before committing it. The viewer echoes back the URL it
-resolved your path to, so a typo or a wrong drive shows up immediately.
-
-### The limitation, which decides whether this is usable at all
-
-A page opened from a `file://` URL - anything double-clicked - is **not allowed by
-the browser to read another file**, on disk or on a share. No code in the page can
-work around it. Verified on Edge: with the CSV in the very same folder as the
-viewer, the read is refused.
-
-The viewer distinguishes the two failures rather than leaving you guessing:
-
-- *"This browser will not let a double-clicked page read local files, so
-  `file:///Z:/profiles/profile.csv` could not even be tried"* - the block. Your
-  path may be perfectly correct; nothing was attempted.
-- *"Could not read `file:///Z:/profiles/profile.csv`"* - reading was permitted and
-  the file was not there. This one is a path or filename problem.
-
-If you see the first message, no amount of fixing the path will help; you need one
-of the routes below.
-
-So a path only loads if one of these holds:
-
-- **The viewer is reached over http(s)** rather than double-clicked - an IIS
-  virtual directory or any static host. Then a relative `AUTOLOAD` just works.
-- **`AUTOLOAD` is an http(s) URL** and that server sends
-  `Access-Control-Allow-Origin`, so a local page is allowed to read it.
-- **The browser is started with `--allow-file-access-from-files`.** This is the
-  only route when the viewer lives on the user's PC and the data stays a plain
-  CSV on a share. A desktop shortcut does it:
-
-  ```
-  msedge.exe --allow-file-access-from-files
-             --user-data-dir="%LOCALAPPDATA%\vpviewer"
-             "C:\Tools\volume-profile.html"
-  ```
-
-  `--user-data-dir` is not optional: Chromium applies startup flags only when the
-  process starts, so an already-running Edge would ignore the flag and the read
-  would fail. The separate profile means that window has its own bookmarks and
-  sign-in state. The flag relaxes local-file isolation for that browser session,
-  which is why it is not the default and may need signing off.
-
-With none of the above, everything else in the viewer works exactly as before;
-you drop the file in by hand.
 
 ## Input format
 
