@@ -9,8 +9,8 @@ rem
 rem  EDIT THESE TWO LINES, then never again.
 rem ---------------------------------------------------------------------------
 
-set "PROFILE_CSV=\\server\team\profiles\profile.csv"
-set "OPEN_ON="
+set "PROFILE_CSV=C:\Users\user\Desktop\Work\Projects\Work\VolumeProfile\example-fake-share\profile.csv"
+set "OPEN_ON=RELIANCE.IN"
 
 rem  PROFILE_CSV  the profile on the share. Always the same name; whatever is
 rem               there when this is clicked is what gets shown. A mapped drive
