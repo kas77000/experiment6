@@ -20,51 +20,64 @@ via `FileReader` and never leaves the machine.
 
 ## Sending one to a client
 
-For a client, the profile is baked into the HTML at build time, so they open the
-file and see the charts. Nothing to locate, no picker, no server.
+Give the client the file **once**. It re-reads the data every time it is opened,
+so it never has to be replaced.
 
-```bash
-python build-client-file.py --csv today.csv --out dist/profile_2026-07-30.html
+Edit the `CONFIG` block at the top of the `<script>` in `volume-profile.html`:
+
+```js
+const CONFIG = {
+  url: "https://data.example.com/profiles/{yyyy}-{mm}-{dd}.csv",
+  select: "RELIANCE.IN",   // "" to land on the picker instead
+  lookback: 5,
+  timeoutMs: 15000
+};
 ```
 
-| Flag | |
+That is the whole setup. No build step, no tooling, nothing to install. Send the
+file; publish a new CSV to that address each day and every client sees it on
+their next open. The **Refresh** button re-pulls without reopening.
+
+| Field | |
 |---|---|
-| `--csv` | the profile to embed |
-| `--out` | the client file to write |
-| `--select RELIANCE.IN` | open on that instrument instead of the picker |
-| `--only A.IN,B.IN` | ship only these instruments, drop the rest |
-| `--title "..."` | browser tab title |
+| `url` | where the CSV lives. `{yyyy}` `{mm}` `{dd}` `{yyyymmdd}` become today's date |
+| `select` | instrument to open on. Empty lands on the picker, data already loaded |
+| `lookback` | days to walk back when a date is not published yet (weekends, holidays, early mornings) |
+| `timeoutMs` | how long to wait for a slow host |
 
-With `--select`, or when the file holds a single instrument, the charts are on
-screen the moment it opens. Otherwise it lands on the picker with the data
-already loaded. Either way the drop zone and **Open another file** are gone: the
-client is never asked to find anything.
+The header always states which date is on screen, and marks it in red when it is
+older than yesterday, so nobody reads stale data believing it is today's. If the
+address cannot be reached the page says why and falls back to letting the user
+open a file by hand.
 
-Rebuild and resend whenever the data changes. The client file is ordinary HTML,
-so it survives mail, chat and file shares intact.
+### The one requirement
 
-### Why embedded and not fetched
+**The host must send `Access-Control-Allow-Origin: *`.**
 
-A file mailed to a client is opened by double-click, so the page runs on
-`file://` and the browser will not let it read anything else:
+A file opened by double-click runs on `file://`, whose origin is `null`. The
+browser blocks it from reading anything unless the server explicitly allows any
+origin. This is not something the page can work around.
 
-- `fetch()` does not implement the `file:` scheme at all, so a sibling CSV is
-  unreachable. This is by design, not a permission that can be granted.
-- `XMLHttpRequest` to a local file is blocked in every current browser without
-  starting it behind a flag such as `--allow-file-access-from-files`.
-- An `https://` request *from* `file://` sends `Origin: null`. It only succeeds
-  against a host returning `Access-Control-Allow-Origin: *`, which SharePoint,
-  OneDrive and Windows file shares do not.
+- **Works**: S3, CloudFront, Azure Blob, Cloudflare R2, GitHub Pages, any
+  nginx/Apache/IIS with the header configured.
+- **Does not work**: SharePoint, OneDrive, Windows file shares (`\\server\path`),
+  or any endpoint requiring a login. These reject a `null` origin, and no
+  amount of loader code changes that.
 
-So no amount of loader code makes an auto-fetch work off a mailed file.
-Embedding removes the request, and with it the problem. If you do have a static
-host that sets `Access-Control-Allow-Origin: *`, fetching becomes possible, but
-it adds a dependency the embedded file does not have.
+That constraint is also why fetching a *local* CSV sitting next to the HTML is
+impossible: `fetch()` does not implement the `file:` scheme at all, and
+`XMLHttpRequest` to a local file is blocked without launching the browser behind
+`--allow-file-access-from-files`.
 
-Size scales with instrument count: about 4 KB of viewer plus roughly 3.5 KB per
-instrument at 5-minute buckets, so 20 instruments is around 160 KB and a single
-one about 72 KB. Use `--only` to keep a client file to the names that client
-actually gets.
+Anything published at that URL is readable by anyone who has it, so use an
+unguessable path or a signed URL if the profiles are not public.
+
+### If the client has no network
+
+There is a second slot, `<script id="embeddedProfile">` near the top of the file.
+Paste a CSV between its tags and the page opens straight into it with no request
+at all. Data is then fixed at the moment you paste, so this only suits a one-off
+send. It is a plain text paste; no tooling involved.
 
 ## Input format
 

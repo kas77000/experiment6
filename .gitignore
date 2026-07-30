@@ -17,4 +17,4 @@ desktop.ini
 .idea/
 
 # Generated client files
-dist/
+# (no build step: nothing generated)
