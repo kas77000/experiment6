@@ -1,121 +1,63 @@
 # Volume Profile Viewer
 
-A single-file HTML viewer for intraday volume profile CSVs. Open a file, pick an
-instrument, and read its cumulated curve, its per-bucket shares, and the full
-bucket table.
+Reads intraday volume profile CSVs and charts them: the cumulated curve, the
+share traded in each bucket, and the full bucket table. No dependencies, no build
+step, no network calls. Everything runs in the browser, and the data never leaves
+the machine.
 
-No build step, no dependencies, no network calls. One `.html` file you can mail
-or drop into a chat, and it opens in any modern browser. The CSV is read locally
-via `FileReader` and never leaves the machine.
+There are two things here.
 
-## Use it
+## 1. `volume-profile.html`
 
-1. Open `volume-profile.html` in a browser.
-2. Drop a CSV on the page, or click to browse.
-3. Type an instrument code and press <kbd>Enter</kbd>.
-4. Optionally narrow **Scale from / to** to the buckets the vertical axis should
-   be read against.
+Open it, drop a CSV on the page or click to browse, type an instrument code and
+press <kbd>Enter</kbd>. One file, nothing to install, fine to mail or paste into
+a chat.
 
-`sample_india_volume_profile.csv` is included so you can try it immediately.
+`sample_india_volume_profile.csv` is included so you can try it straight away.
 
-## Publishing it to users
+## 2. `Volume-Profile.bat`
 
-Hand the file over **once**. It re-reads its data every time it is opened, so it
-never has to be replaced. Edit the `CONFIG` block at the top of the `<script>`
-and send it.
+One file the user double-clicks. It reads the profile from the share and opens
+the charts: no file to locate, nothing to install, nothing on the share but the
+CSV.
 
-### From a shared drive
-
-Put `volume-profile.html` on the share, with the profiles in a folder beside it:
-
-```
-\\server\team\volume-profile.html
-\\server\team\profiles\2026-07-30.js
-```
-
-```js
-const CONFIG = {
-  dataFile: "profiles/{yyyy}-{mm}-{dd}.js",
-  select: "RELIANCE.IN",   // "" to land on the picker instead
-  lookback: 5,
-  timeoutMs: 15000
-};
-```
-
-Keep the path **relative** and the same file works from `\\server\share` or a
-mapped `Z:\` without change. Drop a new file on the share each morning and
-everyone sees it next time they open the page. No server, no network, no install.
-
-The data has to be published as **JavaScript, not raw CSV**: one line wrapping
-the CSV text.
-
-```js
-VP_PROFILE = "…the whole CSV as a JSON string…";
-```
-
-Built-in PowerShell writes it, so there is nothing to install:
+Build it:
 
 ```powershell
-"VP_PROFILE = " + (ConvertTo-Json ([IO.File]::ReadAllText("today.csv"))) + ";" |
-    Set-Content -Encoding utf8 "\\server\team\profiles\2026-07-30.js"
+.\build-single-file.ps1 -Csv "\\server\team\profiles\profile.csv"
 ```
 
-`make-profile-js.ps1` in this repo does the same with argument checking:
+That produces `Volume-Profile.bat`, about 70 KB, with the whole viewer folded
+inside it. Hand that one file out. Run the build again whenever
+`volume-profile.html` changes.
 
-```powershell
-.\make-profile-js.ps1 -Csv today.csv -OutDir \\server\team\profiles
+The share path can also be edited afterwards: it is the first line of the file.
+
+```bat
+set "VP_CSV=\\server\team\profiles\profile.csv"
 ```
 
-Add that line to whatever job already drops the CSV on the share.
+Keep the CSV name fixed and overwrite it whenever you like. Every click reads
+whatever is there at that moment, so the file is handed out once and never
+replaced. A mapped drive (`Z:\profiles\profile.csv`) works the same way.
 
-> **Why JavaScript and not the CSV directly.** A page opened by double-click runs
-> on `file://`, and browsers refuse to let it read a neighbouring file: `fetch()`
-> does not implement the `file:` scheme at all, `XMLHttpRequest` is blocked, and
-> reading an `<iframe>` is blocked. A `<script>` tag is the one exception, since
-> script loading is exempt from the same-origin check. That is the whole reason
-> for the wrapper, and it is why the earlier auto-load could not work.
+If the share is unreachable, or the file is not a volume profile, the window
+stays open with the reason.
 
-### From a web host
+### How it works
 
-If the profiles are on a web server instead, point `url` at the CSV directly and
-skip the wrapper:
+`cmd` runs the few lines at the top and exits before reaching the rest.
+PowerShell then re-reads the file, takes its own section from between the
+markers and the viewer from after the last one, drops the CSV in, writes the
+result to `%LOCALAPPDATA%\VolumeProfile\volume-profile.html` and opens it.
 
-```js
-url: "https://data.example.com/profiles/{yyyy}-{mm}-{dd}.csv",
-```
+A `<script>` tag is the only way a page opened by double-click can read another
+local file, and it must be valid JavaScript, so a share holding nothing but CSVs
+cannot be read by the browser alone. PowerShell has no such restriction. That is
+the whole reason the launcher exists.
 
-**That host must send `Access-Control-Allow-Origin: *`**, because a
-double-clicked page has origin `null`. S3, CloudFront, Azure Blob, Cloudflare R2,
-GitHub Pages and configured nginx/Apache/IIS qualify. SharePoint, OneDrive and
-anything behind a login do not: use `dataFile` for those. Anything at that URL is
-readable by whoever has it, so use an unguessable path or a signed URL if the
-profiles are not public.
-
-### Either way
-
-| Field | |
-|---|---|
-| `dataFile` | path to the `.js` wrapper, relative to the HTML. For shared drives |
-| `url` | http(s) address of a CSV. Needs the CORS header above |
-| `select` | instrument to open on. Empty lands on the picker, data already loaded |
-| `lookback` | days to walk back when a date is not published: weekends, holidays, mornings before the job runs |
-| `timeoutMs` | how long to wait before giving up |
-
-`{yyyy}` `{mm}` `{dd}` `{yyyymmdd}` in either path become the date at the moment
-the page opens.
-
-The header states which date is on screen and turns it red once it is older than
-yesterday, so stale data is never mistaken for today's. **Refresh** re-reads
-without hunting for the file again. If nothing can be loaded the page says
-exactly what it looked for and why it failed, then falls back to letting the user
-open a file by hand.
-
-### One-off sends
-
-There is also `<script id="embeddedProfile">` near the top of the file. Paste a
-CSV between its tags and the page opens straight into it, carrying its own data
-and reading nothing. Fixed at the moment you paste, so it suits a single send
-rather than a daily one.
+Neither file picks an instrument for you. Which one comes first depends on the
+export, so both open on the list.
 
 ## Input format
 
@@ -130,7 +72,7 @@ ICICIBC.IN,ICBK.NS,NSI-MAIN,India Standard Time,9:20:00,0.0431
 ```
 
 `CumulatedPercentage` is cumulative, so each bucket's own share is the difference
-from the previous row. The viewer computes that for you.
+from the previous row. The viewer works that out.
 
 Parsing is deliberately tolerant, because these files get re-saved through Excel:
 
@@ -146,7 +88,7 @@ Malformed rows are skipped and counted rather than failing the whole file.
 ## Time zones
 
 The `TimeZone` column (falling back to the file's `#TimeZone=` line) is resolved
-and every bucket is converted to the viewing machine's zone.
+and every bucket converted to the viewing machine's zone.
 
 `India Standard Time` is a *Windows* zone name rather than an IANA id, so the
 viewer carries a lookup table of ~140 Windows names, plus bare abbreviations
@@ -155,7 +97,7 @@ through untouched. Offsets are resolved through `Intl` at a reference date, so
 daylight saving is computed rather than assumed. The date field lets you check a
 different DST period.
 
-Buckets that land on another calendar day are marked `-1d` / `+1d`, and rows stay
+Buckets landing on another calendar day are marked `-1d` / `+1d`, and rows stay
 in session order rather than resorting around midnight. So 09:15 in Mumbai reads
 as 05:45 in Paris, 13:45 in Sydney, and 23:45 `-1d` in New York.
 
@@ -172,11 +114,16 @@ zones differ, the table shows both.
 - The shaded band at the left is the pre-open stretch, where the curve is flat by
   construction.
 
-## Scale window
+Hovering either chart syncs the crosshair, the bars and the table row. With a
+chart focused, arrow keys, <kbd>Home</kbd> and <kbd>End</kbd> do the same. Table
+columns sort, and **Export selection** writes the visible instrument out as CSV
+with both source and converted times.
+
+### Scale window
 
 A closing auction can be 15-20% of the day, which flattens every intraday bar
 against an axis tall enough to hold it. **Scale from / to** picks the stretch of
-the session the vertical axis is computed from - leave the auction out and the
+the session the vertical axis is computed from: leave the auction out and the
 intraday shape gets the full height.
 
 Both ends are dropdowns of the loaded instrument's own buckets, so the window can
@@ -192,38 +139,26 @@ the window it is on and how far into the day it reaches.
   compared between windows.
 - **Cumulated volume** is rebased on the window: the curve still runs 0 to 100%,
   but of the volume traded inside the window rather than of the day. The caption
-  says what that 100% is worth - "100% here is the 17.4% of the day that trades
-  inside the window" - and the hover lists the day figure and the window figure
-  side by side, so the crosshair reading is never ambiguous.
+  says what that 100% is worth, and the hover lists the day figure and the window
+  figure side by side.
 
-The two dashed references therefore answer different questions:
+The two dashed references therefore answer different questions. *Even pace*
+follows the curve's units, so inside a window it is a flat schedule over the
+window's own buckets. *Average bucket* stays the whole session's average,
+matching the bars, which are still day shares; when a narrow window's ceiling
+falls below it, the label says so rather than drawing it.
 
-- *even pace* follows the curve's units. Inside a window it is a flat schedule
-  over the window's own buckets, which is the only reference in the same units as
-  a rebased curve; the day's pace line put through the same rebasing would usually
-  leave the top of the axis. Read the window's share in the caption to see how the
-  stretch sits against the day.
-- *average bucket* stays the whole session's average, matching the bars, which are
-  still day shares. When a narrow window's ceiling falls below it, the label says
-  so rather than drawing it.
-
-Hovering still syncs both charts and the table. The table always lists the full
-session, so a row outside the window has nothing to point at on either chart:
-both drop their crosshairs while the row itself still highlights. **Export
-selection** is always the full session too.
+The table always lists the full session, so a row outside the window has nothing
+to point at on either chart: both drop their crosshairs while the row itself
+still highlights. **Export selection** is always the full session too.
 
 The window survives a **Local / Source** flip, relabelled into the zone on show.
 Picking another instrument starts again on the full session.
-
-Hovering either chart syncs the crosshair, the bars, and the table row. With a
-chart focused, arrow keys, <kbd>Home</kbd> and <kbd>End</kbd> do the same. Table
-columns sort, and **Export selection** writes the visible instrument out as CSV
-with both source and converted times.
 
 ## Sample data
 
 `sample_india_volume_profile.csv` is **synthetic**. The instrument codes are real
 NSE constituents, but the volume curves are generated: a U-shaped intraday
-profile with a heavy open, a midday lull, and a closing-auction spike, each
+profile with a heavy open, a midday lull and a closing-auction spike, each
 normalised to close on exactly 1. It contains no real market or client data. It
 exists to exercise the viewer, not to describe any actual trading day.

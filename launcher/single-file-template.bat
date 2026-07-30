@@ -2,17 +2,14 @@
 rem ===========================================================================
 rem   VOLUME PROFILE  -  double-click this file
 rem ---------------------------------------------------------------------------
-rem   EDIT THE TWO LINES BELOW. Nothing else in this file needs touching.
+rem   EDIT THE ONE LINE BELOW. Nothing else in this file needs touching.
 rem ===========================================================================
 
 set "VP_CSV=\\server\team\profiles\profile.csv"
-set "VP_SELECT="
 
-rem   VP_CSV     the profile on the share. Always the same name: whatever is
-rem              there when you click is what you see. A mapped drive works
-rem              too, e.g.  Z:\profiles\profile.csv
-rem   VP_SELECT  instrument to open on, e.g. RELIANCE.IN
-rem              Leave empty to choose from the list each time.
+rem   VP_CSV   the profile on the share. Always the same name: whatever is
+rem            there when you click is what you see. A mapped drive works
+rem            too, e.g.  Z:\profiles\profile.csv
 rem
 rem ===========================================================================
 rem   Everything below is the program. Leave it alone.
@@ -39,7 +36,6 @@ function Quit($msg, $code) {
 }
 
 $csv = $env:VP_CSV
-$sel = $env:VP_SELECT
 
 Write-Host ""
 Write-Host "  Volume Profile" -ForegroundColor Cyan
@@ -66,12 +62,12 @@ $html = $self.Substring($i + $hm.Length)
 
 # Hand the data to the page as a JavaScript string. ConvertTo-Json escapes
 # quotes, backslashes and newlines, so any CSV content is safe to embed.
+# No instrument is chosen here: which one is first varies from file to file,
+# so the page opens on the list and the user picks.
 $payload = "<script>VP_PROFILE = " + (ConvertTo-Json $csvText) + ";" +
-           "VP_PROFILE_NAME = " + (ConvertTo-Json ([IO.Path]::GetFileName($csv))) + ";"
-if ($sel) { $payload += "VP_SELECT = " + (ConvertTo-Json $sel) + ";" }
-$payload += "</script>"
+           "VP_PROFILE_NAME = " + (ConvertTo-Json ([IO.Path]::GetFileName($csv))) + ";</script>"
 
-$marker = '<script id="embeddedProfile"'
+$marker = '<!--VP-' + 'INJECT-->'
 $j = $html.IndexOf($marker)
 if ($j -lt 0) { Quit "The viewer inside this file is not the expected one." 4 }
 $merged = $html.Substring(0, $j) + $payload + "`n" + $html.Substring($j)

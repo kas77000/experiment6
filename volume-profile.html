@@ -255,22 +255,8 @@ td.mini{width:140px}
 </head>
 <body>
 
-<!-- ===========================================================================
-     EMBEDDED PROFILE
-     Stamped in by build-client-file.py. When this block holds a CSV the page
-     opens straight into it: no file picker, no network request, no server.
-
-     This is the only approach that works for a file mailed to a client. A page
-     opened by double-click runs on file://, and browsers refuse to let such a
-     page read anything else: fetch() does not implement the file: scheme at
-     all, XMLHttpRequest to a sibling file is blocked without a browser flag,
-     and an https:// call from file:// sends "Origin: null", which SharePoint,
-     OneDrive and file shares reject. Embedding sidesteps all of it, because
-     there is nothing left to request.
-
-     Leave it empty and the page behaves exactly as before: drop or browse.
-     =========================================================================== -->
-<script id="embeddedProfile" type="text/plain" data-name="" data-select=""></script>
+<!-- The single-file launcher injects the profile here. -->
+<!--VP-INJECT-->
 
 <div class="wrap">
 
@@ -281,7 +267,6 @@ td.mini{width:140px}
     </div>
     <div class="spacer"></div>
     <div class="acts">
-      <button id="btnRefresh" class="hidden">Refresh</button>
       <button id="btnNew" class="hidden">Open another file</button>
       <button id="btnCsv" class="hidden">Export selection</button>
       <button id="btnTheme" class="icon" aria-label="Switch to dark theme" title="Switch theme"></button>
@@ -375,84 +360,6 @@ td.mini{width:140px}
 
 <script>
 "use strict";
-
-/* ===========================================================================
-   CONFIGURATION  -  the only part of this file you edit
-   ===========================================================================
-
-   Point this at a CSV published over HTTPS and the page pulls it every time it
-   is opened. Hand the client the file once; the data stays current because the
-   file re-reads the URL, it does not carry a copy.
-
-   Set ONE of dataFile or url. Both understand date tokens, replaced with the
-   date at the moment the page opens:
-
-       {yyyy} {mm} {dd}      2026 07 30
-       {yyyymmdd}            20260730
-
-   ---------------------------------------------------------------------------
-   dataFile   FOR A SHARED DRIVE. A path relative to this HTML file, pointing at
-              a .js wrapper around the profile (see below). Put this file on the
-              share next to the data and it reads it on every open.
-
-                dataFile: "profiles/{yyyy}-{mm}-{dd}.js"
-
-              It is loaded with a <script> tag, which is the one way a page
-              opened by double-click may still read a neighbouring file: script
-              tags are exempt from CORS, whereas fetch() refuses the file:
-              scheme outright and XMLHttpRequest is blocked. Keep the path
-              relative and the same file works from \\server\share or Z:\ alike.
-
-              The data must be JavaScript, not raw CSV. The wrapper is one line
-              around the CSV text:
-
-                VP_PROFILE = "…the whole CSV as a JSON string…";
-
-              Built-in PowerShell writes it, no install needed:
-
-                "VP_PROFILE = " + ((Get-Content in.csv -Raw) | ConvertTo-Json) + ";" `
-                  | Set-Content -Encoding utf8 out.js
-
-   ---------------------------------------------------------------------------
-   url        FOR A WEB HOST. Fetched over http(s).
-
-                url: "https://host/profiles/{yyyy}-{mm}-{dd}.csv"
-
-              THE HOST MUST SEND  Access-Control-Allow-Origin: *  because a
-              double-clicked page has origin "null". S3, Azure Blob, CloudFront,
-              R2, GitHub Pages and configured nginx/Apache/IIS qualify.
-              SharePoint, OneDrive and plain file shares do not: use dataFile
-              for those.
-   ---------------------------------------------------------------------------
-
-   select     instrument to open on, e.g. "RELIANCE.IN". Empty means land on
-              the picker with the data already loaded.
-   lookback   days to walk back when a date is not published: weekends,
-              holidays, mornings before the job has run. The header always
-              states which date is actually on screen.
-   timeoutMs  give up on a slow or unreachable source after this long.
-
-   Leave both empty and the page just asks for a file, as before.
-   =========================================================================== */
-const CONFIG = {
-  dataFile: "",
-  url: "",
-  select: "",
-  lookback: 5,
-  timeoutMs: 15000
-};
-
-/* This block gets hand-edited, so tolerate a deleted or mistyped line rather
-   than failing to start. Everything below can assume the shape is right. */
-(() => {
-  const str = k => (typeof CONFIG[k] === "string" ? CONFIG[k].trim() : "");
-  const num = (k, d) => (typeof CONFIG[k] === "number" && isFinite(CONFIG[k]) && CONFIG[k] >= 0 ? CONFIG[k] : d);
-  CONFIG.dataFile  = str("dataFile");
-  CONFIG.url       = str("url");
-  CONFIG.select    = str("select");
-  CONFIG.lookback  = Math.min(60, Math.round(num("lookback", 5)));
-  CONFIG.timeoutMs = Math.max(1000, num("timeoutMs", 15000));
-})();
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -1423,183 +1330,29 @@ $("btnTheme").onclick = () => setTheme(document.documentElement.dataset.theme ==
 setTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 
 /* =========================================================================
-   9. Loading without the client choosing a file
+   9. Data handed straight to the page
 
-   Two ways in, tried in order:
-     1. CONFIG.url  - fetched fresh on every open, so one file stays current
-     2. an embedded CSV - carried inside the file, for clients with no network
-   Neither configured: the page asks for a file, as it always did.
+   The single-file launcher injects a <script> that sets VP_PROFILE before this
+   runs. When it is there, open it and hide the file controls: the user was
+   given the data, not asked to find it.
+
+   Nothing injected means the ordinary page: drop a file, or browse for one.
    ========================================================================= */
-
-function autoSelect(){                               // land on a chart, not the picker
-  const want = (window.VP_SELECT || CONFIG.select ||
-                $("embeddedProfile").dataset.select || "").trim().toUpperCase();
-  if (want){
-    const i = matches.findIndex(g => (g.fidessa || "").toUpperCase() === want ||
-                                     (g.reuters || "").toUpperCase() === want);
-    if (i >= 0){ active = i; pick(i); return; }
-    // a typo, or the name dropped out of today's file: say so rather than
-    // showing an empty picker and leaving the reader to guess why
-    $("pickMsg").querySelector(".blank").innerHTML =
-      "<b>" + esc(want) + "</b> is not in this profile. " +
-      "Pick one of the " + DATA.list.length + " instruments above, then press <kbd>Enter</kbd>.";
-  }
-  if (DATA.list.length === 1){ active = 0; pick(0); }   // nothing to choose
-}
-
-/** {yyyy}/{mm}/{dd}/{yyyymmdd} for a date `back` days before today */
-function stampUrl(tpl, back){
-  const d = new Date();
-  d.setDate(d.getDate() - back);
-  const y = d.getFullYear(), m = pad2(d.getMonth() + 1), day = pad2(d.getDate());
-  return {
-    url: tpl.replace(/\{yyyy\}/g, y).replace(/\{mm\}/g, m).replace(/\{dd\}/g, day)
-            .replace(/\{yyyymmdd\}/g, "" + y + m + day),
-    label: y + "-" + m + "-" + day,
-    back: back
-  };
-}
-
-const isDated = t => /\{yyyy\}|\{mm\}|\{dd\}|\{yyyymmdd\}/.test(t);
-const candidates = tpl => isDated(tpl)
-  ? Array.from({ length: CONFIG.lookback + 1 }, (_, i) => stampUrl(tpl, i))
-  : [{ url: tpl, label: "", back: 0 }];
-
-/** Load one .js wrapper by <script> tag. The only local read a file:// page gets. */
-function loadScriptOnce(src){
-  return new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    const timer = setTimeout(() => { s.remove(); reject(new Error("timeout")); }, CONFIG.timeoutMs);
-    s.src = src;
-    s.onload = () => { clearTimeout(timer); s.remove(); resolve(); };
-    s.onerror = () => { clearTimeout(timer); s.remove(); reject(new Error("missing")); };
-    document.head.appendChild(s);
-  });
-}
-
-async function scriptProfile(){
-  const tries = candidates(CONFIG.dataFile);
-  for (const t of tries){
-    window.VP_PROFILE = undefined;                  // so a stale global cannot pass as a fresh load
-    // query string is honoured on file:// too, so an updated file is never served from cache
-    const bust = (t.url.includes("?") ? "&" : "?") + "_=" + Date.now();
-    try { await loadScriptOnce(t.url + bust); } catch (e){ continue; }
-    if (typeof window.VP_PROFILE === "string" && window.VP_PROFILE.trim())
-      return { text: window.VP_PROFILE, hit: t };
-    // the file loaded but defined nothing: a wrapper problem, not a missing day
-    throw new Error("Found " + t.url + " but it did not set VP_PROFILE. " +
-                    "The wrapper should read:  VP_PROFILE = \"…csv…\";");
-  }
-  throw new Error("No profile file found next to this page" +
-    (isDated(CONFIG.dataFile) ? " for the last " + (CONFIG.lookback + 1) + " days" : "") +
-    ". Looked for " + candidates(CONFIG.dataFile)[0].url + " relative to this file.");
-}
-
-async function fetchProfile(){
-  const tpl = CONFIG.url;
-  const dated = isDated(tpl);
-  const tries = candidates(tpl);
-  let lastStatus = 0;
-
-  for (const t of tries){
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), CONFIG.timeoutMs);
-    try {
-      // cache-bust so a proxy cannot pin the client to a stale morning copy
-      const bust = (t.url.includes("?") ? "&" : "?") + "_=" + Date.now();
-      const res = await fetch(t.url + bust, { cache: "no-store", signal: ctl.signal });
-      clearTimeout(timer);
-      if (res.ok) return { text: await res.text(), hit: t };
-      lastStatus = res.status;
-      if (res.status === 404 && dated) continue;      // that date is not published, walk back
-      throw new Error("The server answered " + res.status + " " + (res.statusText || "") + ".");
-    } catch (e){
-      clearTimeout(timer);
-      if (e.name === "AbortError")
-        throw new Error("No answer within " + Math.round(CONFIG.timeoutMs / 1000) + "s. " +
-                        "The host may be unreachable from this machine.");
-      if (e instanceof TypeError)                     // opaque by design: CORS, DNS, offline, proxy
-        throw new Error("The browser blocked or could not complete the request. Usually one of: " +
-                        "no network route to the host, or the server is not sending the " +
-                        "Access-Control-Allow-Origin header this file needs.");
-      throw e;
-    }
-  }
-  throw new Error(lastStatus === 404
-    ? "No profile published for the last " + (CONFIG.lookback + 1) + " days at that address."
-    : "Could not load the profile.");
-}
-
-async function loadRemote(quiet){
-  const btn = $("btnRefresh");
-  if (btn) btn.disabled = true;
-  if (!quiet){
-    $("dropTitle").textContent = "Loading today's profile";
-    $("dropSub").textContent = "Fetching from the configured address.";
-    showErr("");
-  }
-  try {
-    const { text, hit } = CONFIG.dataFile ? await scriptProfile() : await fetchProfile();
-    const wasCur = CUR && (CUR.fidessa || CUR.reuters);
-    boot(parseCSV(text), hit.label ? "Profile for " + hit.label : "Latest profile");
-    $("btnNew").classList.add("hidden");              // the client is not asked to find anything
-
-    const age = hit.back === 0 ? "today"
-              : hit.back === 1 ? "yesterday"
-              : hit.back + " days ago";
-    $("fileSub").innerHTML = esc(hit.label ? "Profile for " + hit.label : "Latest profile") +
-      '  ·  <span class="' + (hit.back > 1 ? "stale" : "") + '">' + esc(age) + "</span>" +
-      "  ·  " + DATA.list.length + " instrument" + (DATA.list.length > 1 ? "s" : "");
-
-    // a refresh should not throw the user back to the picker
-    if (wasCur){
-      const i = matches.findIndex(g => (g.fidessa || g.reuters) === wasCur);
-      if (i >= 0){ active = i; pick(i); return; }
-    }
-    autoSelect();
-  } catch (e){
-    resetDrop();
-    $("dropZone").classList.remove("hidden");
-    $("app").classList.add("hidden");
-    showErr(e.message);
-    $("dropSub").textContent = "You can still open a profile by hand: drop one here or click to browse.";
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
 (() => {
-  const slot = $("embeddedProfile");
-  const embedded = slot ? slot.textContent.trim() : "";
+  if (typeof window.VP_PROFILE !== "string" || !window.VP_PROFILE.trim()) return;
 
-  // Already handed the data: a launcher injected VP_PROFILE, or a <script src>
-  // to the share was pasted into this file by hand. Nothing to load.
-  if (typeof window.VP_PROFILE === "string" && window.VP_PROFILE.trim()){
-    try { boot(parseCSV(window.VP_PROFILE), window.VP_PROFILE_NAME || "profile"); }
-    catch (e){ showErr("The profile handed to this page could not be read: " + e.message); return; }
-    $("btnNew").classList.add("hidden");
-    $("fileSub").textContent = (window.VP_PROFILE_NAME || "Profile") +
-      "  ·  " + DATA.list.length + " instrument" + (DATA.list.length > 1 ? "s" : "");
-    autoSelect();
-    return;
-  }
+  try { boot(parseCSV(window.VP_PROFILE), window.VP_PROFILE_NAME || "profile"); }
+  catch (e){ showErr("The profile handed to this page could not be read: " + e.message); return; }
 
-  if (CONFIG.dataFile || CONFIG.url){
-    $("btnRefresh").classList.remove("hidden");
-    // a share-drive reload has to be a full reload: a <script> already run cannot be re-run
-    $("btnRefresh").onclick = () => CONFIG.dataFile ? location.reload() : loadRemote(true);
-    loadRemote(false);
-    return;
-  }
-  if (!embedded) return;                              // nothing configured: keep the picker
-
-  try { boot(parseCSV(embedded), slot.dataset.name || "embedded profile"); }
-  catch (e){ showErr("The profile built into this file could not be read: " + e.message); return; }
   $("btnNew").classList.add("hidden");
-  $("fileSub").textContent = (slot.dataset.name || "Embedded profile") +
+  $("fileSub").textContent = (window.VP_PROFILE_NAME || "Profile") +
     "  ·  " + DATA.list.length + " instrument" + (DATA.list.length > 1 ? "s" : "");
-  autoSelect();
+
+  // No instrument is chosen for the user: which one comes first varies by file.
+  // A single-instrument file is the one case with nothing to choose.
+  if (DATA.list.length === 1){ active = 0; pick(0); }
 })();
+
 </script>
 </body>
 </html>
