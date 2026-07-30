@@ -18,3 +18,8 @@ desktop.ini
 
 # Generated client files
 # (no build step: nothing generated)
+
+# Local demo folders
+example-share/
+example-launcher/
+example-sharedjs/

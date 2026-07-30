@@ -1432,7 +1432,8 @@ setTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
    ========================================================================= */
 
 function autoSelect(){                               // land on a chart, not the picker
-  const want = (CONFIG.select || $("embeddedProfile").dataset.select || "").trim().toUpperCase();
+  const want = (window.VP_SELECT || CONFIG.select ||
+                $("embeddedProfile").dataset.select || "").trim().toUpperCase();
   if (want){
     const i = matches.findIndex(g => (g.fidessa || "").toUpperCase() === want ||
                                      (g.reuters || "").toUpperCase() === want);
@@ -1565,6 +1566,18 @@ async function loadRemote(quiet){
 (() => {
   const slot = $("embeddedProfile");
   const embedded = slot ? slot.textContent.trim() : "";
+
+  // Already handed the data: a launcher injected VP_PROFILE, or a <script src>
+  // to the share was pasted into this file by hand. Nothing to load.
+  if (typeof window.VP_PROFILE === "string" && window.VP_PROFILE.trim()){
+    try { boot(parseCSV(window.VP_PROFILE), window.VP_PROFILE_NAME || "profile"); }
+    catch (e){ showErr("The profile handed to this page could not be read: " + e.message); return; }
+    $("btnNew").classList.add("hidden");
+    $("fileSub").textContent = (window.VP_PROFILE_NAME || "Profile") +
+      "  ·  " + DATA.list.length + " instrument" + (DATA.list.length > 1 ? "s" : "");
+    autoSelect();
+    return;
+  }
 
   if (CONFIG.dataFile || CONFIG.url){
     $("btnRefresh").classList.remove("hidden");
