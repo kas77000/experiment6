@@ -31,10 +31,23 @@ foreach ($p in @($Viewer, $Template)) {
 $tpl  = [IO.File]::ReadAllText($Template)
 $html = [IO.File]::ReadAllText($Viewer)
 
-# The launcher appends its driver script just before the closing body tag, and
-# calls boot()/parseCSV() from the viewer's own script. Nothing else is assumed.
-foreach ($needed in @('</body>', 'function boot(', 'function parseCSV(')) {
-    if (-not $html.Contains($needed)) { throw "$Viewer is missing '$needed'; is it the right file?" }
+# The launcher appends a small driver script after the viewer's own and calls
+# what is already defined there. Every one of those names is checked here, so a
+# rename in the viewer fails the build instead of failing on a client's screen.
+$requires = [ordered]@{
+    '</body>'            = 'the closing body tag the driver is appended before'
+    'function boot('     = 'boot(), which loads a parsed profile'
+    'function parseCSV(' = 'parseCSV(), which reads the CSV text'
+    'function showErr('  = 'showErr(), used to report an unreadable profile'
+    'function pick('     = 'pick(), used when the file holds one instrument'
+    'id="btnNew"'        = 'the Open-another-file button the driver hides'
+    'id="fileSub"'       = 'the sub-heading the driver rewrites'
+}
+$missing = @()
+foreach ($k in $requires.Keys) { if (-not $html.Contains($k)) { $missing += "  $k   ($($requires[$k]))" } }
+if ($missing) {
+    throw ("$Viewer no longer provides what the launcher calls:`n" + ($missing -join "`n") +
+           "`n`nEither restore those names, or update the driver in $Template.")
 }
 # The batch header is only safe if cmd never reaches the payload, and it never
 # does: the header exits first. But a stray marker would break extraction.
@@ -57,9 +70,35 @@ if ($Csv) {
 $tpl = $tpl -replace "`n", "`r`n"
 [IO.File]::WriteAllText($Out, $tpl + $html, (New-Object Text.UTF8Encoding $false))
 
+# Read the result back and confirm it is the shape the .bat will look for at run
+# time, so a build never hands over a file that fails on the first click.
+$built = [IO.File]::ReadAllText($Out)
+$b = [IO.File]::ReadAllBytes($Out)
+$checks = [ordered]@{
+    'starts with @echo'   = ($b[0] -eq 0x40 -and $b[1] -eq 0x65)
+    'no byte-order mark'  = -not ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
+    'PowerShell section'  = ($built.IndexOf('#PS-BEGIN') -gt 0 -and
+                             $built.IndexOf('#PS-END') -gt $built.IndexOf('#PS-BEGIN'))
+    'viewer attached'     = ($built.IndexOf('<!--HTML-BEGIN-->') -gt 0 -and
+                             $built.LastIndexOf('</html>') -gt $built.IndexOf('<!--HTML-BEGIN-->'))
+}
+$bad = $checks.Keys | Where-Object { -not $checks[$_] }
+if ($bad) {
+    Remove-Item -LiteralPath $Out -Force
+    throw ("The built file failed its own check (" + ($bad -join ", ") + "). Nothing was written.")
+}
+
 $size = (Get-Item -LiteralPath $Out).Length
+# \r?$ , not $ : the built file is CRLF, and "$" sits after the \r, so a plain
+# "$" here matches nothing. Same trap as the VP_CSV substitution above.
+$csvLine = ([regex]::Match($built, '(?m)^set "VP_CSV=(.*)"\r?$')).Groups[1].Value
 ""
 "wrote $Out"
 "  {0:N0} KB, one file, nothing else needed" -f ($size / 1KB)
+"  reads: $csvLine"
 ""
-"  Next: open it in Notepad and set VP_CSV to the share path, then double-click it."
+if ($csvLine -like '\\server\team\*') {
+    "  NOTE: that is still the placeholder path. Set VP_CSV before handing this out."
+} else {
+    "  Ready to hand out."
+}
