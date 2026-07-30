@@ -48,8 +48,15 @@ stays open with the reason.
 
 `cmd` runs the few lines at the top and exits before reaching the rest.
 PowerShell then re-reads the file, takes its own section from between the
-markers and the viewer from after the last one, drops the CSV in, writes the
-result to `%LOCALAPPDATA%\VolumeProfile\volume-profile.html` and opens it.
+markers and the viewer from after the last one, appends the CSV to it as a short
+script, writes the result to `%LOCALAPPDATA%\VolumeProfile\volume-profile.html`
+and opens it.
+
+`volume-profile.html` plays no part in this and contains no loading code at all.
+It is the plain choose-a-file page. The launcher appends its own `<script>` after
+the page's own, and that script calls the functions already defined there. So the
+viewer can be handed out on its own, untouched, and behaves exactly as it always
+did.
 
 A `<script>` tag is the only way a page opened by double-click can read another
 local file, and it must be valid JavaScript, so a share holding nothing but CSVs
