@@ -190,7 +190,6 @@ select:hover{border-color:var(--axis)}
 .series-area{fill:var(--series-soft)}
 .bar{fill:var(--series)}
 .bar.hi{fill:var(--series-ink)}
-.brk{stroke:var(--surface);stroke-width:2.5;stroke-linecap:round}
 .cross{stroke:var(--axis);stroke-width:1}
 .dot{fill:var(--series);stroke:var(--surface);stroke-width:2}
 .endlab{fill:var(--ink-2);font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums}
@@ -663,6 +662,18 @@ let DATA = null, CUR = null, HOVER = -1, active = 0, matches = [], SORT = { k: "
 let RANGE = null, RANGE_KEY = "";
 const scaleRows = rows => (RANGE ? rows.slice(RANGE.a, RANGE.b + 1) : rows);
 
+/** volume traded before the window, and inside it, both as a share of the day */
+function winShare(){
+  const rows = CUR.rows, base = RANGE.a > 0 ? rows[RANGE.a - 1].cum : 0;
+  return { base, total: rows[RANGE.b].cum - base };
+}
+/** cumulated share rebased on the window, so the curve spans 0-100% inside it */
+function winCum(r){
+  if (!RANGE) return r.cum;
+  const { base, total } = winShare();
+  return total > 0 ? (r.cum - base) / total * 100 : 0;
+}
+
 function showErr(msg){
   const e = $("err");
   e.innerHTML = ICO.warn + "<span>" + esc(msg) + "</span>";
@@ -831,19 +842,20 @@ function xTicks(rows, g){
 
 /* ---------- cumulated share ---------- */
 function drawLine(){
-  const svg = $("lineSvg"), rows = CUR.rows;
+  const svg = $("lineSvg"), all = CUR.rows;
   svg.innerHTML = "";
-  const g = geom(svg), n = rows.length, bw = g.PW / n;
-  const X = i => g.PAD.l + (i + 0.5) * bw;
 
-  // The window's own reach sets the ceiling, so a range early in the session
-  // spreads a few percent over the full height instead of hugging the baseline.
-  const winCum = scaleRows(rows).reduce((m, r) => Math.max(m, r.cum), 0);
-  const sc = RANGE && winCum > 0 ? niceScale(winCum) : null;
-  const top = sc ? Math.min(100, sc.top) : 100, step = sc ? sc.step : 25;
-  const dec = Number.isInteger(step) ? 0 : step >= 0.1 ? 1 : 2;
-  const Y = v => g.PAD.t + g.PH - (v / top) * g.PH;
-  G.line = { g, X, Y, bw, lo: 0, hi: n - 1, val: r => r.cum };      // the curve always shows the whole session
+  // The window restricts the time axis here too, so both charts cover the same
+  // period. Indices stay global - `off` shifts them into plot space.
+  const off = RANGE ? RANGE.a : 0, rows = scaleRows(all), nAll = all.length;
+  const g = geom(svg), n = rows.length, bw = g.PW / n;
+  const X = i => g.PAD.l + (i - off + 0.5) * bw;
+
+  // Inside a window the cumulated share is rebased on the window's own volume, so
+  // the curve still runs 0-100% across it and the axis needs no rescaling. What
+  // 100% stands for changes, which the caption and the hover both spell out.
+  const Y = v => g.PAD.t + g.PH - (v / 100) * g.PH;
+  G.line = { g, X, Y, bw, lo: off, hi: off + n - 1, val: winCum };
 
   const clip = el("clipPath", { id: "clipLine" });
   clip.appendChild(el("rect", { x: g.PAD.l, y: g.PAD.t, width: g.PW, height: g.PH }));
@@ -852,67 +864,60 @@ function drawLine(){
   // the pre-open stretch, where the curve is flat by construction
   const first = rows.findIndex(r => r.delta > 0);
   if (first > 0){
-    const w = X(first) - bw / 2 - g.PAD.l;
+    const w = X(off + first) - bw / 2 - g.PAD.l;
     svg.appendChild(el("rect", { class: "preopen", x: g.PAD.l, y: g.PAD.t, width: Math.max(0, w), height: g.PH }));
     if (w > 54) svg.appendChild(el("text", { class: "reflab", x: g.PAD.l + 5, y: g.PAD.t + 12 }, "pre-open"));
   }
+  $("scNote1").textContent = !RANGE ? ""
+    : winShare().total <= 0 ? "No volume trades in " + rangeSpan() + "."
+    : "Showing " + rangeSpan() + " only, " + n + " of " + nAll + " buckets. 100% here is the "
+      + fmt(winShare().total, 1) + "% of the day that trades inside the window.";
 
   const yt = el("g", { class: "yticks" });
-  for (let v = 0; v <= top + 1e-9; v += step){
+  for (let v = 0; v <= 100; v += 25){
     svg.appendChild(el("line", { class: "gridline", x1: g.PAD.l, x2: g.PAD.l + g.PW, y1: Y(v), y2: Y(v) }));
-    yt.appendChild(el("text", { class: "tick y", x: g.PAD.l - 8, y: Y(v) + 4 }, fmt(v, dec) + "%"));
+    yt.appendChild(el("text", { class: "tick y", x: g.PAD.l - 8, y: Y(v) + 4 }, v + "%"));
   }
   svg.appendChild(yt);
   svg.appendChild(el("line", { class: "axisline", x1: g.PAD.l, x2: g.PAD.l + g.PW, y1: Y(0), y2: Y(0) }));
 
-  // series and reference are clipped to the plot, so a windowed ceiling cuts them
-  // at the axis rather than letting them run over the title
+  // clipped so the pace line, which starts half a bucket left of the window, is trimmed
   const plot = el("g", { "clip-path": "url(#clipLine)" });
-  let d = "", area = "M" + X(0) + "," + Y(0);
-  rows.forEach((r, i) => { d += (i ? "L" : "M") + X(i) + "," + Y(r.cum); area += "L" + X(i) + "," + Y(r.cum); });
-  area += "L" + X(n - 1) + "," + Y(0) + "Z";
+  const hi = off + n - 1;
+  let d = "", area = "M" + X(off) + "," + Y(0);
+  rows.forEach((r, k) => {
+    d += (k ? "L" : "M") + X(off + k) + "," + Y(winCum(r));
+    area += "L" + X(off + k) + "," + Y(winCum(r));
+  });
+  area += "L" + X(hi) + "," + Y(0) + "Z";
   plot.appendChild(el("path", { class: "series-area", d: area }));
 
-  // even-pace reference: what a flat, volume-blind schedule would trace.
-  // Drawn over the fill so its halo works, under the series line so data stays on top.
-  const i0 = Math.max(0, first - 1);
-  const pace = i => (i - i0) / (n - 1 - i0) * 100;
-  if (n - i0 > 4){
-    plot.appendChild(el("line", { class: "ref", x1: X(i0), y1: Y(0), x2: X(n - 1), y2: Y(100) }));
-    // 0.62 along whatever part of the pace line is still on screen, so the label
-    // follows it under a windowed ceiling instead of drifting off the top
-    const mid = Math.round(i0 + (n - 1 - i0) * Math.min(1, top / 100) * 0.62);
-    if (!g.tight && mid > i0 + 1){                    // label mid-line, clear of the endpoint value
-      plot.appendChild(el("text", { class: "reflab", x: X(mid) + 6, y: Y(pace(mid)) + 14 }, "even pace"));
+  // Even-pace reference: what a flat, volume-blind schedule would trace. Inside a
+  // window that means a flat schedule over the window's own buckets, which is the
+  // only reference in the same units as the rebased curve - the day's pace line
+  // put through the same rebasing would usually leave the top of the axis, since
+  // it is measured against the day's volume and not the window's. It starts where
+  // volume starts, at the end of any pre-open the window contains.
+  // Over the fill so its halo works, under the series line so data stays on top.
+  const i0 = Math.max(0, all.findIndex(r => r.delta > 0) - 1);
+  const ps = Math.max(off - 1, i0);
+  if (hi - ps > 4){
+    plot.appendChild(el("line", { class: "ref", x1: X(ps), y1: Y(0), x2: X(hi), y2: Y(100) }));
+    if (!g.tight){                                    // label mid-line, clear of the endpoint value
+      const mid = Math.round(ps + (hi - ps) * 0.62);
+      plot.appendChild(el("text", { class: "reflab", x: X(mid) + 6,
+        y: Y((mid - ps) / (hi - ps) * 100) + 14 }, "even pace"));
     }
   }
   plot.appendChild(el("path", { class: "series-line", d: d }));
   svg.appendChild(plot);
 
-  xTicks(rows, g).forEach(o => svg.appendChild(el("text", { class: "tick x", x: X(o.i), y: g.H - 10 }, o.r.label)));
+  xTicks(rows, g).forEach(o => svg.appendChild(el("text", { class: "tick x", x: X(off + o.i), y: g.H - 10 }, o.r.label)));
 
-  const last = rows[n - 1];
-  if (last.cum <= top){
-    svg.appendChild(el("circle", { class: "dot", cx: X(n - 1), cy: Y(last.cum), r: 4 }));
-    svg.appendChild(el("text", { class: "endlab", x: X(n - 1) - 8, "text-anchor": "end",
-      y: Math.max(g.PAD.t + 11, Y(last.cum) - 10) }, fmt(last.cum, 1) + "%"));
-  } else {
-    // the curve leaves a windowed ceiling: break it where it crosses and state
-    // where it really ends, so the cut can never read as the end of the day
-    const j = rows.findIndex(r => r.cum > top), p = rows[j - 1];
-    const xc = p ? X(j - 1) + (top - p.cum) / (rows[j].cum - p.cum) * (X(j) - X(j - 1)) : X(j);
-    const y = g.PAD.t + 5;
-    svg.appendChild(el("path", { class: "brk", fill: "none",
-      d: "M" + (xc - 8) + "," + (y + 4) + "L" + (xc + 8) + "," + (y - 2) +
-         "M" + (xc - 8) + "," + (y + 9) + "L" + (xc + 8) + "," + (y + 3) }));
-    const near = xc > g.PAD.l + g.PW - 72;
-    svg.appendChild(el("text", { class: "endlab", "text-anchor": near ? "end" : "start",
-      x: xc + (near ? -12 : 12), y: g.PAD.t + 11 }, "ends " + fmt(last.cum, 1) + "%"));
-  }
-  $("scNote1").textContent = !RANGE ? ""
-    : !sc ? "No volume inside " + rangeSpan() + ", so the session scale is kept."
-    : "Axis capped at " + fmt(top, dec) + "%, taken from " + rangeSpan()
-      + (last.cum > top ? "; the curve breaks where it leaves the axis." : ".");
+  const end = winCum(rows[n - 1]);
+  svg.appendChild(el("circle", { class: "dot", cx: X(hi), cy: Y(end), r: 4 }));
+  svg.appendChild(el("text", { class: "endlab", x: X(hi) - 8, "text-anchor": "end",
+    y: Math.max(g.PAD.t + 11, Y(end) - 10) }, fmt(end, 1) + "%"));
 
   const cross = el("g", { class: "xhair", opacity: 0 });
   cross.appendChild(el("line", { class: "cross", y1: g.PAD.t, y2: g.PAD.t + g.PH }));
@@ -1017,16 +1022,20 @@ function drawBars(){
 }
 
 function chartSummary(kind){
-  const rows = CUR.rows, live = rows.filter(r => r.delta > 0);
+  const rows = CUR.rows;
   const who = (CUR.fidessa || CUR.reuters) + " on " + (CUR.venue || "the venue");
+  const shown = scaleRows(rows);                     // both charts cover the window only
+  const win = RANGE ? ", showing " + rangeSpan() + " only, " + shown.length + " of " + rows.length + " buckets" : "";
   if (kind === "cumulated"){
-    return "Cumulated volume for " + who + ", " + (live.length ? live[0].label + " to " + rows[rows.length - 1].label : "")
-      + ", reaching 100% of the day. Half the volume trades by " + ((rows.find(r => r.cum >= 50) || {}).label || "n/a") + "."
-      + (RANGE ? " The vertical scale is taken from " + rangeSpan() + "." : "");
+    const from = shown.find(r => r.delta > 0) || shown[0];
+    return "Cumulated volume for " + who + win + ", " + from.label + " to " + shown[shown.length - 1].label + ". "
+      + (RANGE ? "The curve runs 0 to 100% of the window's own volume, which is "
+                 + fmt(winShare().total, 1) + "% of the day."
+               : "It reaches 100% of the day.")
+      + " Half the day's volume trades by " + ((rows.find(r => r.cum >= 50) || {}).label || "n/a") + ".";
   }
-  const shown = scaleRows(rows);                     // the bars only cover the window
   const peak = shown.reduce((a, b) => (b.delta > a.delta ? b : a), shown[0]);
-  return "Volume per bucket for " + who + (RANGE ? ", showing " + rangeSpan() + " only" : "")
+  return "Volume per bucket for " + who + win
     + ". The largest bucket shown is " + peak.label + " at " + fmt(peak.delta) + "% of the day.";
 }
 
@@ -1121,8 +1130,13 @@ function setHover(i){
       (CUR.shifted ? ' <small>' + r.src + " " + esc(CUR.srcId.split("/").pop()) + '</small>' : "") + '</div>' +
     '<div class="row"><span><i class="sw"></i>This bucket</span><b>' + fmt(r.delta) + '%</b></div>' +
     '<div class="row"><span>Cumulated</span><b>' + fmt(r.cum) + '%</b></div>' +
+    // the curve is rebased inside a window, so name both figures rather than let
+    // the crosshair flag and this disagree
+    (RANGE ? '<div class="row"><span>Of window</span><b>' + fmt(winCum(r)) + '%</b></div>' : '') +
     '<div class="row"><span>Left to trade</span><b>' + fmt(Math.max(0, 100 - r.cum)) + '%</b></div>';
-  place($("lineTip"), $("lineSvg"), G.line, i, body);
+  const inLine = i >= G.line.lo && i <= G.line.hi;   // the table can point outside either window
+  if (inLine) place($("lineTip"), $("lineSvg"), G.line, i, body);
+  else $("lineTip").classList.remove("on");
   if (inBars) place($("barTip"), $("barSvg"), G.bar, i, body);
   else $("barTip").classList.remove("on");
 }

@@ -84,25 +84,34 @@ Both ends are dropdowns of the loaded instrument's own buckets, so the window ca
 only ever land on a real bucket; moving one end past the other pushes the other
 along. **Full session** returns to the whole day.
 
-The two charts use the window differently, and each says which in its caption:
+Both charts are restricted to it: only the window's buckets are drawn and both
+time axes narrow to them, so the two always cover the same period. Each captions
+the window it is on and how far into the day it reaches.
 
-- **Volume per bucket** is restricted to it. Only the window's buckets are drawn,
-  the x-axis narrows to them, and the tallest bar on screen sets the ceiling - so
-  nothing there is ever off-scale.
-- **Cumulated volume** keeps the whole session and takes only its ceiling from
-  the window, because that curve is read for its shape. Where it leaves the axis
-  it is cut with break marks and annotated with the close it really reaches. A
-  window ending at the close still needs the full 0-100% axis, so that chart is
-  left alone.
+- **Volume per bucket** takes its ceiling from the tallest bar on screen, so
+  nothing there is ever off-scale. Bars stay shares *of the day*, so they can be
+  compared between windows.
+- **Cumulated volume** is rebased on the window: the curve still runs 0 to 100%,
+  but of the volume traded inside the window rather than of the day. The caption
+  says what that 100% is worth - "100% here is the 17.4% of the day that trades
+  inside the window" - and the hover lists the day figure and the window figure
+  side by side, so the crosshair reading is never ambiguous.
 
-The dashed *average bucket* reference stays the whole session's average whatever
-window is on show, so it remains the same day-level benchmark. When a narrow
-window's ceiling falls below it, the label says so rather than drawing it.
+The two dashed references therefore answer different questions:
 
-Hovering still syncs both charts and the table. A bucket outside the window has no
-bar to point at, so the bar chart drops its crosshair while the curve and the
-table row keep following it. The bucket table and **Export selection** are always
-the full session.
+- *even pace* follows the curve's units. Inside a window it is a flat schedule
+  over the window's own buckets, which is the only reference in the same units as
+  a rebased curve; the day's pace line put through the same rebasing would usually
+  leave the top of the axis. Read the window's share in the caption to see how the
+  stretch sits against the day.
+- *average bucket* stays the whole session's average, matching the bars, which are
+  still day shares. When a narrow window's ceiling falls below it, the label says
+  so rather than drawing it.
+
+Hovering still syncs both charts and the table. The table always lists the full
+session, so a row outside the window has nothing to point at on either chart:
+both drop their crosshairs while the row itself still highlights. **Export
+selection** is always the full session too.
 
 The window survives a **Local / Source** flip, relabelled into the zone on show.
 Picking another instrument starts again on the full session.
