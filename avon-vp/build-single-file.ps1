@@ -12,7 +12,11 @@ Run this once, and again whenever volume-profile.html changes.
 
 .EXAMPLE
   .\build-single-file.ps1
-  .\build-single-file.ps1 -Csv "\\server\team\profiles\profile.csv"
+  .\build-single-file.ps1 -Csv "\\yourserver\yourteam\profiles\profile.csv"
+  .\build-single-file.ps1 -Csv "Z:\profiles\profile.csv"
+
+Give -Csv the real share path. Passing the placeholder that is already in the
+template is harmless but pointless - the built file would still need editing.
 #>
 [CmdletBinding()]
 param(
@@ -59,10 +63,23 @@ foreach ($m in @('#PS-BEGIN', '#PS-END')) {
 # after the \r and the substitution below silently matches nothing.
 $tpl = $tpl -replace "`r`n", "`n"
 
+# Tolerant of a hand-edited line - leading spaces, a dropped quote, or the curly
+# quotes a path picks up coming through Outlook or Word - because that line is
+# meant to be edited by hand and an exact shape is too much to demand.
+$VP_LINE = '(?m)^[ \t]*set[ \t]+["\u201C\u201D]?VP_CSV=.*$'
+
 if ($Csv) {
-    $before = $tpl
-    $tpl = [regex]::Replace($tpl, '(?m)^set "VP_CSV=.*"$', 'set "VP_CSV=' + $Csv + '"')
-    if ($tpl -eq $before) { throw "Could not set VP_CSV: the template line was not found." }
+    if (-not [regex]::IsMatch($tpl, $VP_LINE)) {
+        $seen = ($tpl -split "`n" | Where-Object { $_ -match 'VP_CSV' } | ForEach-Object { "      $_" }) -join "`n"
+        throw ("Could not find the VP_CSV line in $Template." +
+               "`n`n  Expected a line of this shape:" +
+               "`n      set `"VP_CSV=\\server\share\profile.csv`"`n`n" +
+               $(if ($seen) { "  These lines mention VP_CSV instead:`n$seen" }
+                 else       { "  No line mentions VP_CSV at all - is that the right file?" }))
+    }
+    # A MatchEvaluator, not a replacement string: "$" in a path such as
+    # \\server\d$\profiles would otherwise be read as a group reference.
+    $tpl = [regex]::Replace($tpl, $VP_LINE, { param($m) 'set "VP_CSV=' + $Csv + '"' })
 }
 
 # CRLF for the batch header so cmd parses it, and no BOM: a BOM at byte 0 makes
@@ -91,7 +108,8 @@ if ($bad) {
 $size = (Get-Item -LiteralPath $Out).Length
 # \r?$ , not $ : the built file is CRLF, and "$" sits after the \r, so a plain
 # "$" here matches nothing. Same trap as the VP_CSV substitution above.
-$csvLine = ([regex]::Match($built, '(?m)^set "VP_CSV=(.*)"\r?$')).Groups[1].Value
+$csvLine = ([regex]::Match($built,
+    '(?m)^[ \t]*set[ \t]+["“”]?VP_CSV=(.*?)["“”]?[ \t]*\r?$')).Groups[1].Value
 ""
 "wrote $Out"
 "  {0:N0} KB, one file, nothing else needed" -f ($size / 1KB)
