@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Real endpoints stay off the tracked tree
+config/connections.json
