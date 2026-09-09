@@ -10,6 +10,7 @@ zero that reads as real.
 from __future__ import annotations
 
 import datetime as dt
+import traceback
 
 import pandas as pd
 import streamlit as st
@@ -24,12 +25,30 @@ from ui import charts, tables
 DASH = "—"
 
 
+LAST_TRACEBACKS: dict[str, str] = {}
+
+
 def guarded(label: str, fn, *args, **kwargs):
-    """Run a provider call. Returns (value, error_message)."""
+    """Run a provider call. Returns (value, error_message).
+
+    The traceback is kept in LAST_TRACEBACKS so a panel can offer it. A one
+    line summary names the exception but not the frame that raised it, and for
+    an error coming out of a library that is the only part that identifies it.
+    """
     try:
         return fn(*args, **kwargs), None
     except Exception as exc:  # noqa: BLE001
+        LAST_TRACEBACKS[label] = traceback.format_exc()
         return None, f"{label}: {type(exc).__name__}: {exc}"
+
+
+def show_error(message: str, label: str) -> None:
+    """The message, with the traceback one click away."""
+    st.error(message)
+    detail = LAST_TRACEBACKS.get(label)
+    if detail:
+        with st.expander("Full traceback", expanded=False):
+            st.code(detail, language="text")
 
 
 def qty(value) -> str:

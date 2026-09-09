@@ -142,7 +142,7 @@ def main():
         profile, err = panels.load_profile(provider, date, sym)
         if err:
             st.caption(f"{sym} - {date.isoformat()} - {provider.label}")
-            st.error(err)
+            panels.show_error(err, "profile")
         else:
             st.caption(f"{sym} - {date.isoformat()} - {provider.label} - "
                        f"times shown in {profile.tz_label}")
