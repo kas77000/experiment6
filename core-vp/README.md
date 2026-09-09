@@ -177,6 +177,33 @@ Sources → Test therefore probes it with a real `get_data_by_date` call, which 
 that tab asks for a test symbol and date. Without them the profile row reports *not
 checked* rather than a misleading pass or fail.
 
+### How a query is sent
+
+Arguments go as **arguments**, never interpolated into a query string, following the
+pattern the working scripts in `kdb-queries` use against these same servers — e.g.
+`liquidity_profile.py`:
+
+```python
+prof = hq(".lp.profile", sym.encode(), dtq, bkt).pd()
+```
+
+Three things matter there, and all three are load-bearing:
+
+| | Why |
+|---|---|
+| `SyncQConnection` | What every working script here uses. No q licence and no `QHOME` are needed, because all evaluation happens on the server. |
+| arguments, not a string | Interpolating means hand-formatting dates and symbols and hoping q parses them back into the right types. Passing them lets pykx convert. |
+| **`sym.encode()`** | pykx turns a Python `str` into a q **char vector**, *not* a symbol. Bytes is what makes it a symbol. |
+
+That last one has a signature failure: passing a `str` where q wants a symbol surfaces
+as `AttributeError: 'CharVector' object has no attribute '_context_keys'`, which names
+neither the symbol nor the argument. `core.connections.qsym()` exists so the conversion
+is never left to chance.
+
+A reply that is a q **string** rather than a table — which is how a restricted gateway
+reports a rejected call — is raised with the server's own message attached, rather than
+being converted into an empty frame that would read as "no rows for this symbol".
+
 ## Layout
 
 ```

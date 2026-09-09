@@ -32,7 +32,9 @@ REGIONS = ("AP", "EU", "US")
 # The gateway's dataset alias. Always `profile`.
 DEFAULT_PROFILE_TABLE = "profile"
 
-PROFILE_COLUMNS = ("date", "sym", "vmed", "time", "cc0")
+# Symbols, so bytes. See qsym().
+PROFILE_COLUMNS = (b"date", b"sym", b"vmed", b"time", b"cc0")
+PROFILE_COLUMNS_NO_CC0 = (b"date", b"sym", b"vmed", b"time")
 ORDER_TABLES = ("target", "target_state", "execution")
 MARKET_TABLES = ("qatt",)
 
@@ -131,8 +133,19 @@ def pykx_available() -> bool:
         return False
 
 
+def qsym(value: str) -> bytes:
+    """A q symbol. pykx turns a Python str into a CHAR VECTOR, not a symbol -
+    bytes is what makes it a symbol, as `sym.encode()` does throughout
+    kdb-queries (see liquidity_profile.py `.lp.profile` call)."""
+    return str(value).strip().encode()
+
+
 class KdbClient:
-    """A pykx handle, opened on demand and reused. pykx is imported lazily."""
+    """A pykx handle, opened on demand and reused. pykx is imported lazily.
+
+    SyncQConnection, matching every working script in kdb-queries: it needs no
+    q licence and no QHOME, because all evaluation happens on the server.
+    """
 
     def __init__(self, host: str, port: int):
         self.host = host
@@ -142,15 +155,22 @@ class KdbClient:
     def _handle(self):
         if self._q is None:
             import pykx as kx
-            self._q = kx.QConnection(host=self.host, port=self.port)
+            self._q = kx.SyncQConnection(host=self.host, port=self.port)
         return self._q
 
+    def call(self, fn: str, *args):
+        """Apply a named q function to arguments.
+
+        The arguments go as ARGUMENTS. Interpolating them into a query string
+        means hand-formatting dates and symbols and hoping q parses them back
+        to the types the function wants; passing them lets pykx do the
+        conversion, which is what the other projects here do.
+        """
+        return self._handle()(fn, *args)
+
     def query(self, expr: str):
-        result = self._handle()(expr)
-        try:
-            return result.pd()
-        except Exception:
-            return result
+        """Evaluate a plain q expression, for the ordinary tables."""
+        return self._handle()(expr)
 
     def close(self) -> None:
         if self._q is not None:
@@ -164,12 +184,26 @@ class KdbClient:
         return f"{self.host}:{self.port}"
 
 
-def profile_query(conn: Connection, date: dt.date, sym: str,
-                  with_cc0: bool = True) -> str:
-    """The gateway call. `profile` is a dataset alias, not an HDB table."""
+def profile_call(conn: Connection, date: dt.date, sym: str,
+                 with_cc0: bool = True) -> tuple:
+    """(function, args) for the gateway call, as arguments rather than a string.
+
+    `profile` is a dataset alias, not an HDB table. Symbols go as bytes; the
+    dates go as dates and pykx converts them.
+    """
+    columns = list(PROFILE_COLUMNS if with_cc0 else PROFILE_COLUMNS_NO_CC0)
+    return (conn.profile_fn,
+            (qsym(conn.profile_table), columns, date, date, qsym(sym)))
+
+
+def profile_call_repr(conn: Connection, date: dt.date, sym: str,
+                      with_cc0: bool = True) -> str:
+    """The same call written as q, for error messages and documentation only.
+    Nothing is ever sent in this form."""
+    cols = PROFILE_COLUMNS if with_cc0 else PROFILE_COLUMNS_NO_CC0
+    joined = "".join("`" + c.decode() for c in cols)
     day = f"{date:%Y.%m.%d}"
-    columns = "`date`sym`vmed`time`cc0" if with_cc0 else "`date`sym`vmed`time"
-    return (f"{conn.profile_fn}[`{conn.profile_table};{columns};"
+    return (f"{conn.profile_fn}[`{conn.profile_table};{joined};"
             f"{day};{day};`{sym}]")
 
 
@@ -190,8 +224,8 @@ def probe(conn: Connection, kind: str = "hist", client_factory=KdbClient,
     endpoint = "%s:%d" % conn.profile_endpoint()
     if sample_date and sample_sym:
         try:
-            client_factory(*conn.profile_endpoint()).query(
-                profile_query(conn, sample_date, sample_sym))
+            fn, args = profile_call(conn, sample_date, sample_sym)
+            client_factory(*conn.profile_endpoint()).call(fn, *args)
             report.append(dict(table=conn.profile_table, role="profile",
                                endpoint=endpoint, ok=True, detail=""))
         except Exception as exc:  # noqa: BLE001

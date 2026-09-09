@@ -17,8 +17,8 @@ import datetime as dt
 
 import pandas as pd
 
-from core.connections import (Connection, KdbClient, profile_query,
-                             resolve_kind)
+from core.connections import (Connection, KdbClient, profile_call,
+                             profile_call_repr, resolve_kind)
 from core.provider import DataProvider
 
 ORDER_SELECT = ("date,id_server,id_target,trader,basket,sym,side,size,algo,"
@@ -78,13 +78,18 @@ class KdbProvider(DataProvider):
     # ------------------------------------------------------------- profile
     def get_profile(self, date: dt.date, sym: str) -> pd.DataFrame:
         # cc0 carries the header-row count (load_equity_special.q:128). Ask for
-        # it, but fall back when the gateway will not serve that column.
+        # it, and fall back only when the gateway objects to that COLUMN - any
+        # other failure is reported as itself. Retrying blindly and reporting
+        # the second error hid the first one, which is how a connection fault
+        # came back looking like a column problem.
+        fn, args = profile_call(self.conn, date, sym, with_cc0=True)
         try:
-            return _frame(self._profile().query(
-                profile_query(self.conn, date, sym, with_cc0=True)))
-        except Exception:
-            return _frame(self._profile().query(
-                profile_query(self.conn, date, sym, with_cc0=False)))
+            return _frame(self._profile().call(fn, *args), self.conn, date, sym)
+        except Exception as first:
+            if not _looks_like_a_column_complaint(first):
+                raise
+            fn, args = profile_call(self.conn, date, sym, with_cc0=False)
+            return _frame(self._profile().call(fn, *args), self.conn, date, sym)
 
     # -------------------------------------------------------------- orders
     def list_vwap_orders(self, date: dt.date, filters: dict) -> pd.DataFrame:
@@ -130,12 +135,59 @@ class KdbProvider(DataProvider):
         return (minute, float(frame.iloc[0]["size"]))
 
 
-def _frame(result) -> pd.DataFrame:
+COLUMN_COMPLAINTS = ("cc0", "not_a_valid_column", "not a valid column",
+                     "invalid column", "column")
+
+
+def _looks_like_a_column_complaint(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(token in text for token in COLUMN_COMPLAINTS)
+
+
+def _frame(result, conn=None, date=None, sym=None) -> pd.DataFrame:
+    """A DataFrame, or an error that says what came back instead.
+
+    A restricted gateway answers a rejected call with a q STRING rather than a
+    table. Returning an empty frame for that would report "no rows for this
+    symbol" and bury the reason, so the message is raised instead.
+    """
     if isinstance(result, pd.DataFrame):
         return result
     if result is None:
         return pd.DataFrame()
+
+    text = _as_text(result)
+    if text is not None:
+        where = ""
+        if conn is not None and date is not None and sym is not None:
+            where = f"\n  call: {profile_call_repr(conn, date, sym)}"
+        raise RuntimeError(
+            f"the server returned a message rather than a table: {text}{where}")
+
     try:
-        return pd.DataFrame(result)
-    except Exception:
-        return pd.DataFrame()
+        return result.pd()
+    except Exception as exc:
+        raise RuntimeError(
+            f"could not read the reply as a table: "
+            f"{type(exc).__name__}: {exc}") from exc
+
+
+def _as_text(result) -> str | None:
+    """The reply as text when it is a q string, else None.
+
+    Checked by duck-typing rather than by importing pykx, which this module
+    never does at import time.
+    """
+    if isinstance(result, (bytes, bytearray)):
+        return bytes(result).decode("utf-8", "replace")
+    if isinstance(result, str):
+        return result
+    if type(result).__name__ in ("CharVector", "CharAtom", "SymbolAtom"):
+        try:
+            value = result.py()
+        except Exception:
+            return str(result)
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).decode("utf-8", "replace")
+        return str(value)
+    return None
