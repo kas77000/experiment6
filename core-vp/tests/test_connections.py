@@ -181,25 +181,41 @@ def test_probe_reports_a_dead_endpoint_instead_of_raising():
 
 
 # ---------------------------------------------------------------- transport
-class _FakeKx:
-    """Stands in for pykx. Records how SyncQConnection was constructed."""
+CONTEXT_ERROR = AttributeError(
+    "'CharVector' object has no attribute '_context_keys'")
 
-    def __init__(self, accepts_no_ctx=True, ctx_bomb=False):
+
+class _FakeKx:
+    """Stands in for pykx.
+
+    ctx_bomb reproduces the VPROF gateway: pykx resolves `q` on the remote,
+    finds the gateway's own char vector, and dies building its context - and
+    it does that even when no_ctx=True was passed, which is what the real
+    traceback showed.
+    """
+
+    def __init__(self, accepts_no_ctx=True, ctx_bomb=False, raw_works=False):
         self.accepts_no_ctx = accepts_no_ctx
         self.ctx_bomb = ctx_bomb
         self.calls = []
+        if raw_works:
+            self.RawQConnection = self._raw
 
     def SyncQConnection(self, host, port, **kw):   # noqa: N802
         self.calls.append(kw)
         if "no_ctx" in kw and not self.accepts_no_ctx:
             raise TypeError("__init__() got an unexpected keyword argument "
                             "'no_ctx'")
-        if not kw.get("no_ctx") and self.ctx_bomb:
-            # what the VPROF gateway does: pykx resolves `q` on the remote,
-            # finds the server's own char vector, and dies building the context
-            raise AttributeError(
-                "'CharVector' object has no attribute '_context_keys'")
+        if self.ctx_bomb:
+            raise CONTEXT_ERROR
         return ("handle", host, port)
+
+    def _raw(self, host, port, **kw):
+        self.calls.append(dict(kw, raw=True))
+        if "no_ctx" in kw:
+            raise TypeError("__init__() got an unexpected keyword argument "
+                            "'no_ctx'")
+        return ("raw", host, port)
 
 
 def _with_fake_pykx(monkeypatch, fake):
@@ -207,21 +223,23 @@ def _with_fake_pykx(monkeypatch, fake):
     monkeypatch.setitem(sys.modules, "pykx", fake)
 
 
-def test_the_context_interface_is_switched_off(monkeypatch):
-    """pykx builds it by evaluating `q` on the REMOTE, and this gateway uses
-    that name for a char vector of its own."""
+def test_the_first_strategy_is_the_least_invasive_one(monkeypatch):
     import core.connections as m
     fake = _FakeKx()
     _with_fake_pykx(monkeypatch, fake)
     m.open_connection("vprof", 5100)
     assert fake.calls == [{"no_ctx": True}]
+    assert m.LAST_STRATEGY[("vprof", 5100)] == "SyncQConnection(no_ctx=True)"
 
 
-def test_a_gateway_that_breaks_the_context_interface_now_connects(monkeypatch):
+def test_a_server_that_breaks_the_context_interface_falls_through(monkeypatch):
+    """no_ctx=True is accepted by this pykx but not honoured, so the fallback
+    has to survive the SAME failure rather than assume the flag worked."""
     import core.connections as m
-    fake = _FakeKx(ctx_bomb=True)
+    fake = _FakeKx(ctx_bomb=True, raw_works=True)
     _with_fake_pykx(monkeypatch, fake)
-    assert m.open_connection("vprof", 5100) == ("handle", "vprof", 5100)
+    assert m.open_connection("vprof", 5100) == ("raw", "vprof", 5100)
+    assert "Raw" in m.LAST_STRATEGY[("vprof", 5100)]
 
 
 def test_an_older_pykx_without_the_flag_still_connects(monkeypatch):
@@ -229,17 +247,28 @@ def test_an_older_pykx_without_the_flag_still_connects(monkeypatch):
     fake = _FakeKx(accepts_no_ctx=False)
     _with_fake_pykx(monkeypatch, fake)
     assert m.open_connection("vprof", 5100) == ("handle", "vprof", 5100)
-    assert fake.calls == [{"no_ctx": True}, {}]
 
 
-def test_any_other_type_error_is_not_swallowed(monkeypatch):
-    """The fallback exists for one missing keyword, not as a blanket retry."""
+def test_a_refused_connection_is_raised_at_once_not_retried(monkeypatch):
+    """Four attempts at a dead port would turn one clear error into noise."""
     import core.connections as m
 
-    class Hostile(_FakeKx):
+    class Dead(_FakeKx):
         def SyncQConnection(self, host, port, **kw):   # noqa: N802
-            raise TypeError("port must be an integer")
+            self.calls.append(kw)
+            raise ConnectionRefusedError("no listener on 5100")
 
-    _with_fake_pykx(monkeypatch, Hostile())
-    with pytest.raises(TypeError, match="port must be an integer"):
+    fake = Dead()
+    _with_fake_pykx(monkeypatch, fake)
+    with pytest.raises(ConnectionRefusedError, match="no listener"):
         m.open_connection("vprof", 5100)
+    assert len(fake.calls) == 1
+
+
+def test_when_nothing_works_the_error_lists_what_was_tried(monkeypatch):
+    import core.connections as m
+    fake = _FakeKx(ctx_bomb=True, raw_works=False)
+    _with_fake_pykx(monkeypatch, fake)
+    with pytest.raises(RuntimeError, match="context interface") as caught:
+        m.open_connection("vprof", 5100)
+    assert "SyncQConnection(no_ctx=True)" in str(caught.value)

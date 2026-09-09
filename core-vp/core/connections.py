@@ -38,6 +38,10 @@ PROFILE_COLUMNS_NO_CC0 = (b"date", b"sym", b"vmed", b"time")
 ORDER_TABLES = ("target", "target_state", "execution")
 MARKET_TABLES = ("qatt",)
 
+# Which construction actually worked, per endpoint. Reported in the UI so a
+# fallback is never silent.
+LAST_STRATEGY: dict[tuple, str] = {}
+
 
 @dataclass
 class Connection:
@@ -141,39 +145,85 @@ def qsym(value: str) -> bytes:
 
 
 def open_connection(host: str, port: int):
-    """A SyncQConnection with pykx's context interface switched OFF.
+    """A handle, opened by whichever construction this pykx and this server
+    both tolerate.
 
-    Building a connection, pykx sets up that interface and evaluates
-    `self.ctx.q` (pykx/__init__.py, reached from ipc.py `_init`). That resolves
-    the name `q` in the REMOTE namespace. The VPROF gateway already uses `q`
-    for a char vector of its own, so pykx gets a string where it expects its
-    handle and dies during construction:
+    Building a connection, pykx sets up its context interface and evaluates
+    `self.ctx.q` (pykx/__init__.py:129, reached from ipc.py `_init`). That
+    resolves the name `q` in the REMOTE namespace. The VPROF gateway keeps a
+    char vector under that name, so pykx gets a string where it expects its
+    handle and dies IN THE CONSTRUCTOR, before any query is sent:
 
         pykx/__init__.py, line 129, in __init__
             *self.ctx.q._context_keys,
         AttributeError: 'CharVector' object has no attribute '_context_keys'
 
-    The query is never sent - this happens before any of them. The order and
-    qatt servers do not define a global `q`, which is why only the gateway
-    fails and why the other scripts on the same machine are fine.
+    The order and qatt servers define no global `q`, which is why only the
+    gateway fails and why other pykx scripts on the same machine are fine.
 
-    Nothing here uses the context interface: every call names its function
-    explicitly, so turning it off costs nothing and removes a whole class of
-    failure caused by names on the server colliding with pykx's own.
+    `no_ctx=True` is ACCEPTED by the pykx in use and does not prevent this, so
+    the working construction is found rather than assumed - see
+    _connection_strategies. Nothing here uses the context interface anyway:
+    every call names its function explicitly.
 
-    SyncQConnection, matching every working script in kdb-queries: it needs no
-    q licence and no QHOME, because all evaluation happens on the server.
+    SyncQConnection first, matching every working script in kdb-queries: it
+    needs no q licence and no QHOME, because evaluation happens on the server.
     """
     import pykx as kx
 
-    try:
-        return kx.SyncQConnection(host=host, port=int(port), no_ctx=True)
-    except TypeError as exc:
-        # An older pykx without the flag. Fall back rather than fail, but only
-        # for that reason - anything else is the real error and must surface.
-        if "no_ctx" not in str(exc):
-            raise
-        return kx.SyncQConnection(host=host, port=int(port))
+    attempts = []
+    for name, build in _connection_strategies(kx):
+        try:
+            handle = build(host, int(port))
+        except Exception as exc:  # noqa: BLE001
+            if not (_is_context_failure(exc) or _is_unsupported_argument(exc)):
+                raise          # a refused connection is the real answer
+            attempts.append(f"{name} -> {type(exc).__name__}: {exc}")
+            continue
+        LAST_STRATEGY[(host, int(port))] = name
+        return handle
+
+    raise RuntimeError(
+        "every way of opening a connection hit pykx's context interface, "
+        "which this server breaks. Tried:\n  " + "\n  ".join(attempts))
+
+
+def _connection_strategies(kx):
+    """Ways to open a handle, least invasive first.
+
+    pykx's API for skipping the context interface has moved between versions
+    and `no_ctx=True` is accepted but not honoured on the one in use here, so
+    the working path is found rather than assumed. Only a context failure or a
+    rejected argument moves on to the next; anything else - a refused
+    connection, a bad port - is raised immediately.
+    """
+    yield ("SyncQConnection(no_ctx=True)",
+           lambda h, p: kx.SyncQConnection(host=h, port=p, no_ctx=True))
+    if hasattr(kx, "RawQConnection"):
+        yield ("RawQConnection(no_ctx=True)",
+               lambda h, p: kx.RawQConnection(host=h, port=p, no_ctx=True))
+        yield ("RawQConnection()",
+               lambda h, p: kx.RawQConnection(host=h, port=p))
+    yield ("SyncQConnection()",
+           lambda h, p: kx.SyncQConnection(host=h, port=p))
+
+
+def _is_context_failure(exc: Exception) -> bool:
+    """pykx building its context interface against a server that breaks it.
+
+    On the VPROF gateway `self.ctx.q` resolves the name `q` in the REMOTE
+    namespace, where the gateway keeps a char vector of its own, so pykx gets a
+    string where it expects its handle:
+
+        pykx/__init__.py, line 129, in __init__
+            *self.ctx.q._context_keys,
+        AttributeError: 'CharVector' object has no attribute '_context_keys'
+    """
+    return isinstance(exc, AttributeError) and "_context_keys" in str(exc)
+
+
+def _is_unsupported_argument(exc: Exception) -> bool:
+    return isinstance(exc, TypeError) and "unexpected keyword" in str(exc)
 
 
 class KdbClient:

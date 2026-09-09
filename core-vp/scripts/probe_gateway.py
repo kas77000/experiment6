@@ -59,6 +59,70 @@ def attempt(name: str, thunk) -> None:
             print(f"  .{conversion}() failed: {type(exc).__name__}: {exc}")
 
 
+def show_pykx_internals(kx) -> None:
+    """The lines that raise, straight out of the installed pykx.
+
+    The failure is in pykx's constructor, so what it does there is the whole
+    question - and it cannot be read anywhere but on the machine that has it.
+    """
+    import inspect
+    import pathlib
+
+    print(DIVIDER)
+    print("# pykx internals: what runs while a connection is constructed")
+
+    root = pathlib.Path(inspect.getfile(kx)).parent
+    for relative, around in (("__init__.py", 129), ("ipc.py", 654)):
+        path = root / relative
+        print(f"\n--- {path}  around line {around} ---")
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            print(f"  could not read: {exc}")
+            continue
+        lo = max(0, around - 16)
+        hi = min(len(lines), around + 8)
+        for n in range(lo, hi):
+            marker = ">>" if n + 1 == around else "  "
+            print(f"{marker} {n + 1:5d}  {lines[n]}")
+
+    print("\n--- connection classes and their arguments ---")
+    for name in ("QConnection", "SyncQConnection", "AsyncQConnection",
+                 "RawQConnection", "SecureQConnection"):
+        cls = getattr(kx, name, None)
+        if cls is None:
+            print(f"  {name:20s} absent")
+            continue
+        try:
+            print(f"  {name:20s} {inspect.signature(cls.__init__)}")
+        except (TypeError, ValueError) as exc:
+            print(f"  {name:20s} signature unavailable: {exc}")
+
+
+def attempt_connections(kx, host: str, port: int) -> None:
+    """Which construction survives this server. The app does the same."""
+    print(DIVIDER)
+    print("# opening a connection")
+
+    def sync_no_ctx():
+        return kx.SyncQConnection(host=host, port=port, no_ctx=True)
+
+    def sync_plain():
+        return kx.SyncQConnection(host=host, port=port)
+
+    candidates = [("SyncQConnection(no_ctx=True)", sync_no_ctx),
+                  ("SyncQConnection()", sync_plain)]
+    if hasattr(kx, "RawQConnection"):
+        candidates[1:1] = [
+            ("RawQConnection(no_ctx=True)",
+             lambda: kx.RawQConnection(host=host, port=port, no_ctx=True)),
+            ("RawQConnection()",
+             lambda: kx.RawQConnection(host=host, port=port))]
+
+    for name, build in candidates:
+        attempt(name, build)
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print(__doc__)
@@ -80,6 +144,9 @@ def main() -> int:
           f"licensed={getattr(kx, 'licensed', '?')}")
     print(f"target {host}:{port}   sym={sym}   date={day}")
 
+    show_pykx_internals(kx)
+    attempt_connections(kx, host, port)
+
     cols_bytes = [b"date", b"sym", b"vmed", b"time"]
     cols_str = ["date", "sym", "vmed", "time"]
     qday = f"{day:%Y.%m.%d}"
@@ -91,7 +158,14 @@ def main() -> int:
     # no_ctx=True: pykx otherwise builds its context interface by evaluating
     # `q` on the REMOTE, and this gateway uses that name for a char vector of
     # its own, so the CONSTRUCTOR dies before any query is sent.
-    conn = kx.SyncQConnection(host=host, port=port, no_ctx=True)
+    try:
+        conn = kx.SyncQConnection(host=host, port=port, no_ctx=True)
+    except Exception:  # noqa: BLE001
+        print(DIVIDER)
+        print("Could not open a handle for the query tests; the connection "
+              "section above is the part that matters.")
+        print(traceback.format_exc())
+        return 0
     attempt("h('1+1')                       plain expression",
             lambda: conn("1+1"))
     attempt("h('.z.D')                      server date",
