@@ -30,17 +30,22 @@ this section records which line said what, so a future reader can re-check it.
 | Order server and market-data server are different processes | `algo-order-monitor/core/connections.py` |
 | Panel-1 layout (KPI → cumulated line → per-bucket bar → table) | `kdbmonitor/docs/examples/volume_profile_dashboard.json` |
 
-### 1.1 The profile table
+### 1.1 The profile dataset
 
-Reached through a gateway function:
+Reached through a gateway function. The first argument is **always `` `profile ``**:
 
 ```q
-get_data_by_date[`vst;`date`sym`vmed`time`cc0;<from>;<to>;`<sym>]
+get_data_by_date[`profile;`date`sym`vmed`time`cc0;<from>;<to>;`<sym>]
 ```
 
-`vst` is the historical, date-partitioned table; `latest_vst` is today's. The first
-argument is validated against a whitelist by the gateway — passing `profile` returns
-`not_a_valid_table`.
+`profile` is a gateway **dataset alias**, not an HDB table name. The `vst` / `vst05d` /
+`vst10d` / `vst20d` tables `load_vprof.q` builds, and the `latest_vst` that `vproflib.q`
+maintains, are what the gateway maps *from*; passing one of those names is rejected.
+
+> An earlier draft of this section had it backwards — it named `` `vst `` as the argument
+> and claimed `` `profile `` was the rejected one. That inference came from
+> `load_vprof.q` while the gateway itself had a bug that answered `not_a_valid_table`
+> to a correct call. `` `profile `` is the answer.
 
 Rows for one `(date, sym)`:
 
