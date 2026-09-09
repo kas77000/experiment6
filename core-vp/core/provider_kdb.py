@@ -17,8 +17,8 @@ import datetime as dt
 
 import pandas as pd
 
-from core.connections import (Connection, KdbClient, profile_call,
-                             profile_call_repr, resolve_kind)
+from core.connections import (Connection, KdbClient, profile_query,
+                             resolve_kind)
 from core.provider import DataProvider
 
 ORDER_SELECT = ("date,id_server,id_target,trader,basket,sym,side,size,algo,"
@@ -82,14 +82,16 @@ class KdbProvider(DataProvider):
         # other failure is reported as itself. Retrying blindly and reporting
         # the second error hid the first one, which is how a connection fault
         # came back looking like a column problem.
-        fn, args = profile_call(self.conn, date, sym, with_cc0=True)
         try:
-            return _frame(self._profile().call(fn, *args), self.conn, date, sym)
+            return _frame(self._profile().query(
+                profile_query(self.conn, date, sym, with_cc0=True)),
+                self.conn, date, sym)
         except Exception as first:
             if not _looks_like_a_column_complaint(first):
                 raise
-            fn, args = profile_call(self.conn, date, sym, with_cc0=False)
-            return _frame(self._profile().call(fn, *args), self.conn, date, sym)
+            return _frame(self._profile().query(
+                profile_query(self.conn, date, sym, with_cc0=False)),
+                self.conn, date, sym)
 
     # -------------------------------------------------------------- orders
     def list_vwap_orders(self, date: dt.date, filters: dict) -> pd.DataFrame:
@@ -160,7 +162,7 @@ def _frame(result, conn=None, date=None, sym=None) -> pd.DataFrame:
     if text is not None:
         where = ""
         if conn is not None and date is not None and sym is not None:
-            where = f"\n  call: {profile_call_repr(conn, date, sym)}"
+            where = f"\n  call: {profile_query(conn, date, sym)}"
         raise RuntimeError(
             f"the server returned a message rather than a table: {text}{where}")
 

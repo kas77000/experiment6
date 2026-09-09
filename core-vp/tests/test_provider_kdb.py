@@ -1,10 +1,9 @@
-"""KdbProvider builds calls. No server needed: a fake client records them.
+"""KdbProvider builds queries. No server needed: a fake client records them.
 
-The gateway call goes through KdbClient.call - function name plus arguments -
-matching the pattern kdb-queries uses against these same servers
-(liquidity_profile.py: `hq(".lp.profile", sym.encode(), dtq, bkt).pd()`).
-Interpolating a symbol into a query string, or passing it as a Python str,
-sends a q CHAR VECTOR where a symbol is wanted.
+Everything goes as TEXT. kdb-queries uses pykx's function-application form
+against the order and qatt servers - `hq(".lp.profile", sym.encode(), ...)` -
+but the VPROF gateway answers that with "Not a valid command"; it
+pattern-matches the incoming string, so the call has to arrive as one.
 """
 import datetime as dt
 
@@ -43,45 +42,34 @@ def provider(**kw):
 
 
 # ------------------------------------------------------------------ profile
-def test_the_profile_call_sends_arguments_not_a_query_string():
+def test_the_profile_call_is_sent_as_one_string():
     p = provider()
     p.get_profile(DATE, "000001.C2")
-    assert p._profile_client.sent == []          # nothing interpolated
-    fn, args = p._profile_client.calls[0]
-    assert fn == "get_data_by_date"
-    assert args == (b"profile",
-                    [b"date", b"sym", b"vmed", b"time", b"cc0"],
-                    DATE, DATE, b"000001.C2")
-
-
-def test_symbols_are_bytes_so_q_receives_symbols():
-    p = provider()
-    p.get_profile(DATE, "7203.JP")
-    _, args = p._profile_client.calls[0]
-    assert isinstance(args[0], bytes) and isinstance(args[-1], bytes)
-    assert not any(isinstance(a, str) for a in args)
+    assert p._profile_client.calls == []          # never the argument form
+    assert p._profile_client.sent[0] == (
+        "get_data_by_date[`profile;`date`sym`vmed`time`cc0;"
+        "2026.07.29;2026.07.29;`000001.C2]")
 
 
 def test_the_dataset_and_function_stay_configurable():
     p = provider(profile_fn="get_profile_rows", profile_table="profile2")
     p.get_profile(DATE, "000001.C2")
-    fn, args = p._profile_client.calls[0]
-    assert fn == "get_profile_rows" and args[0] == b"profile2"
+    assert p._profile_client.sent[0].startswith("get_profile_rows[`profile2;")
 
 
 def test_cc0_is_dropped_only_when_the_gateway_objects_to_that_column():
     class Picky(FakeClient):
-        def call(self, fn, *args):
-            self.calls.append((fn, args))
-            if b"cc0" in args[1]:
+        def query(self, expr):
+            self.sent.append(expr)
+            if "cc0" in expr:
                 raise RuntimeError("not_a_valid_column: cc0")
             return pd.DataFrame({"time": [0], "vmed": [1.0]})
 
     p = provider()
     p._profile_client = Picky()
     out = p.get_profile(DATE, "000001.C2")
-    assert len(p._profile_client.calls) == 2
-    assert b"cc0" not in p._profile_client.calls[1][1][1]
+    assert len(p._profile_client.sent) == 2
+    assert "cc0" not in p._profile_client.sent[1]
     assert len(out) == 1
 
 
@@ -89,15 +77,15 @@ def test_any_other_failure_is_reported_as_itself_not_retried():
     """The bug this replaces: a blind retry reported the SECOND error, so a
     connection fault came back looking like a column problem."""
     class Broken(FakeClient):
-        def call(self, fn, *args):
-            self.calls.append((fn, args))
+        def query(self, expr):
+            self.sent.append(expr)
             raise ConnectionRefusedError("no listener on 5100")
 
     p = provider()
     p._profile_client = Broken()
     with pytest.raises(ConnectionRefusedError, match="no listener"):
         p.get_profile(DATE, "000001.C2")
-    assert len(p._profile_client.calls) == 1       # not retried
+    assert len(p._profile_client.sent) == 1       # not retried
 
 
 def test_a_string_reply_is_raised_as_the_servers_message():

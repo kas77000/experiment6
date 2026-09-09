@@ -123,6 +123,52 @@ def attempt_connections(kx, host: str, port: int) -> None:
         attempt(name, build)
 
 
+REFUSAL = b"Not a valid command"
+
+# The gateway's own refusal says: "You can view the allowed commands/examples
+# by looking at the debug table." It does not say what that table is called, so
+# these are the plausible names. A wrong guess costs nothing - the gateway
+# answers with the same refusal string.
+DEBUG_TABLE_NAMES = ("debug", "debug_table", "debugtable", ".debug",
+                     "help", "commands", "allowed", "examples", "usage",
+                     "get_debug", "debug[]", "help[]", "tables[]")
+
+
+def find_debug_table(conn) -> None:
+    """Ask the gateway what it actually allows.
+
+    Read only, and the gateway invites exactly this.
+    """
+    print(DIVIDER)
+    print("# the gateway's debug table: what it says it allows")
+
+    for name in DEBUG_TABLE_NAMES:
+        try:
+            value = conn(name)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  {name:16s} {type(exc).__name__}: {exc}")
+            continue
+
+        raw = None
+        try:
+            raw = value.py()
+        except Exception:  # noqa: BLE001
+            pass
+
+        if isinstance(raw, (bytes, bytearray)) and REFUSAL in bytes(raw):
+            print(f"  {name:16s} refused")
+            continue
+
+        print(f"  {name:16s} ANSWERED -> {describe(value)}")
+        try:
+            print("    .pd() ->")
+            print(value.pd().to_string()[:4000])
+        except Exception as exc:  # noqa: BLE001
+            print(f"    .pd() failed: {type(exc).__name__}: {exc}")
+            if raw is not None:
+                print(f"    .py() -> {str(raw)[:2000]}")
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print(__doc__)
@@ -166,6 +212,8 @@ def main() -> int:
               "section above is the part that matters.")
         print(traceback.format_exc())
         return 0
+    find_debug_table(conn)
+
     attempt("h('1+1')                       plain expression",
             lambda: conn("1+1"))
     attempt("h('.z.D')                      server date",
@@ -180,22 +228,6 @@ def main() -> int:
     attempt("h('get_data_by_date', b'profile', [b'..'], d, d, b'sym')",
             lambda: conn("get_data_by_date", b"profile", cols_bytes,
                          day, day, sym.encode()))
-
-    # 4. The call form with plain str, to see whether str-vs-bytes is what
-    #    produces the CharVector.
-    attempt("h('get_data_by_date', 'profile', ['..'], d, d, 'sym')  str args",
-            lambda: conn("get_data_by_date", "profile", cols_str,
-                         day, day, sym))
-
-    # 5. Explicit pykx types, leaving no conversion to guesswork.
-    def typed():
-        return conn("get_data_by_date",
-                    kx.SymbolAtom("profile"),
-                    kx.SymbolVector(["date", "sym", "vmed", "time"]),
-                    kx.DateAtom(day), kx.DateAtom(day),
-                    kx.SymbolAtom(sym))
-    attempt("h('get_data_by_date', kx.SymbolAtom(...), ...)  explicit types",
-            typed)
 
     # 6. A Torq-style gateway answers with a DEFERRED response: the reply does
     #    not arrive on the synchronous round trip. QStudio's own error for this

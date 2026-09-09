@@ -32,9 +32,8 @@ REGIONS = ("AP", "EU", "US")
 # The gateway's dataset alias. Always `profile`.
 DEFAULT_PROFILE_TABLE = "profile"
 
-# Symbols, so bytes. See qsym().
-PROFILE_COLUMNS = (b"date", b"sym", b"vmed", b"time", b"cc0")
-PROFILE_COLUMNS_NO_CC0 = (b"date", b"sym", b"vmed", b"time")
+PROFILE_COLUMNS = ("date", "sym", "vmed", "time", "cc0")
+PROFILE_COLUMNS_NO_CC0 = ("date", "sym", "vmed", "time")
 ORDER_TABLES = ("target", "target_state", "execution")
 MARKET_TABLES = ("qatt",)
 
@@ -137,13 +136,6 @@ def pykx_available() -> bool:
         return False
 
 
-def qsym(value: str) -> bytes:
-    """A q symbol. pykx turns a Python str into a CHAR VECTOR, not a symbol -
-    bytes is what makes it a symbol, as `sym.encode()` does throughout
-    kdb-queries (see liquidity_profile.py `.lp.profile` call)."""
-    return str(value).strip().encode()
-
-
 def open_connection(host: str, port: int):
     """A handle, opened by whichever construction this pykx and this server
     both tolerate.
@@ -161,13 +153,23 @@ def open_connection(host: str, port: int):
     The order and qatt servers define no global `q`, which is why only the
     gateway fails and why other pykx scripts on the same machine are fine.
 
-    `no_ctx=True` is ACCEPTED by the pykx in use and does not prevent this, so
-    the working construction is found rather than assumed - see
-    _connection_strategies. Nothing here uses the context interface anyway:
-    every call names its function explicitly.
+    MEASURED against the gateway (scripts/probe_gateway.py, dc2nix2p424):
 
-    SyncQConnection first, matching every working script in kdb-queries: it
-    needs no q licence and no QHOME, because evaluation happens on the server.
+        SyncQConnection(no_ctx=True)   opens
+        RawQConnection(...)            opens, but every call then fails with
+                                       "Cannot load requested context object
+                                       in unlicensed mode"
+        SyncQConnection()              AttributeError, as above
+
+    So no_ctx=True is the one to use, and it is first. The same call has also
+    been seen to fail inside the running app while succeeding in a fresh
+    process, which suggests pykx keeps some of this per-process rather than
+    per-connection; the ordered list is therefore kept, and whichever
+    construction won is recorded in LAST_STRATEGY so a fallback is never
+    silent.
+
+    SyncQConnection, matching every working script in kdb-queries: it needs no
+    q licence and no QHOME, because evaluation happens on the server.
     """
     import pykx as kx
 
@@ -199,13 +201,12 @@ def _connection_strategies(kx):
     """
     yield ("SyncQConnection(no_ctx=True)",
            lambda h, p: kx.SyncQConnection(host=h, port=p, no_ctx=True))
-    if hasattr(kx, "RawQConnection"):
-        yield ("RawQConnection(no_ctx=True)",
-               lambda h, p: kx.RawQConnection(host=h, port=p, no_ctx=True))
-        yield ("RawQConnection()",
-               lambda h, p: kx.RawQConnection(host=h, port=p))
     yield ("SyncQConnection()",
            lambda h, p: kx.SyncQConnection(host=h, port=p))
+    # RawQConnection is deliberately NOT here. Against the gateway it opens
+    # and then fails every query with "Cannot load requested context object in
+    # unlicensed mode", so accepting it would trade a clear connection error
+    # for an obscure one on every read.
 
 
 def _is_context_failure(exc: Exception) -> bool:
@@ -239,18 +240,22 @@ class KdbClient:
             self._q = open_connection(self.host, self.port)
         return self._q
 
-    def call(self, fn: str, *args):
-        """Apply a named q function to arguments.
-
-        The arguments go as ARGUMENTS. Interpolating them into a query string
-        means hand-formatting dates and symbols and hoping q parses them back
-        to the types the function wants; passing them lets pykx do the
-        conversion, which is what the other projects here do.
-        """
-        return self._handle()(fn, *args)
-
     def query(self, expr: str):
-        """Evaluate a plain q expression, for the ordinary tables."""
+        """Send a q expression as TEXT.
+
+        Not pykx's function-application form - `h(fn, arg1, arg2)` - which is
+        what kdb-queries uses and what this code tried first. The VPROF gateway
+        rejects it outright:
+
+            h('get_data_by_date', b'profile', [...], d, d, b'000100.C2')
+            -> b'Not a valid command.  Please note due to memory/resource
+                 restrictions this port is for now only used for selecting
+                 data. No logic and processing is allowed.'
+
+        It pattern-matches the incoming text, so the call has to arrive as one
+        string. The order and qatt servers take text too, so this is the single
+        form for every endpoint.
+        """
         return self._handle()(expr)
 
     def close(self) -> None:
@@ -265,24 +270,14 @@ class KdbClient:
         return f"{self.host}:{self.port}"
 
 
-def profile_call(conn: Connection, date: dt.date, sym: str,
-                 with_cc0: bool = True) -> tuple:
-    """(function, args) for the gateway call, as arguments rather than a string.
+def profile_query(conn: Connection, date: dt.date, sym: str,
+                  with_cc0: bool = True) -> str:
+    """The gateway call, as the one string the gateway will accept.
 
-    `profile` is a dataset alias, not an HDB table. Symbols go as bytes; the
-    dates go as dates and pykx converts them.
+    `profile` is a dataset alias, not an HDB table name.
     """
-    columns = list(PROFILE_COLUMNS if with_cc0 else PROFILE_COLUMNS_NO_CC0)
-    return (conn.profile_fn,
-            (qsym(conn.profile_table), columns, date, date, qsym(sym)))
-
-
-def profile_call_repr(conn: Connection, date: dt.date, sym: str,
-                      with_cc0: bool = True) -> str:
-    """The same call written as q, for error messages and documentation only.
-    Nothing is ever sent in this form."""
     cols = PROFILE_COLUMNS if with_cc0 else PROFILE_COLUMNS_NO_CC0
-    joined = "".join("`" + c.decode() for c in cols)
+    joined = "".join("`" + c for c in cols)
     day = f"{date:%Y.%m.%d}"
     return (f"{conn.profile_fn}[`{conn.profile_table};{joined};"
             f"{day};{day};`{sym}]")
@@ -305,8 +300,8 @@ def probe(conn: Connection, kind: str = "hist", client_factory=KdbClient,
     endpoint = "%s:%d" % conn.profile_endpoint()
     if sample_date and sample_sym:
         try:
-            fn, args = profile_call(conn, sample_date, sample_sym)
-            client_factory(*conn.profile_endpoint()).call(fn, *args)
+            client_factory(*conn.profile_endpoint()).query(
+                profile_query(conn, sample_date, sample_sym))
             report.append(dict(table=conn.profile_table, role="profile",
                                endpoint=endpoint, ok=True, detail=""))
         except Exception as exc:  # noqa: BLE001
