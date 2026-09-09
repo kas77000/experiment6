@@ -140,12 +140,44 @@ def qsym(value: str) -> bytes:
     return str(value).strip().encode()
 
 
-class KdbClient:
-    """A pykx handle, opened on demand and reused. pykx is imported lazily.
+def open_connection(host: str, port: int):
+    """A SyncQConnection with pykx's context interface switched OFF.
+
+    Building a connection, pykx sets up that interface and evaluates
+    `self.ctx.q` (pykx/__init__.py, reached from ipc.py `_init`). That resolves
+    the name `q` in the REMOTE namespace. The VPROF gateway already uses `q`
+    for a char vector of its own, so pykx gets a string where it expects its
+    handle and dies during construction:
+
+        pykx/__init__.py, line 129, in __init__
+            *self.ctx.q._context_keys,
+        AttributeError: 'CharVector' object has no attribute '_context_keys'
+
+    The query is never sent - this happens before any of them. The order and
+    qatt servers do not define a global `q`, which is why only the gateway
+    fails and why the other scripts on the same machine are fine.
+
+    Nothing here uses the context interface: every call names its function
+    explicitly, so turning it off costs nothing and removes a whole class of
+    failure caused by names on the server colliding with pykx's own.
 
     SyncQConnection, matching every working script in kdb-queries: it needs no
     q licence and no QHOME, because all evaluation happens on the server.
     """
+    import pykx as kx
+
+    try:
+        return kx.SyncQConnection(host=host, port=int(port), no_ctx=True)
+    except TypeError as exc:
+        # An older pykx without the flag. Fall back rather than fail, but only
+        # for that reason - anything else is the real error and must surface.
+        if "no_ctx" not in str(exc):
+            raise
+        return kx.SyncQConnection(host=host, port=int(port))
+
+
+class KdbClient:
+    """A pykx handle, opened on demand and reused. pykx is imported lazily."""
 
     def __init__(self, host: str, port: int):
         self.host = host
@@ -154,8 +186,7 @@ class KdbClient:
 
     def _handle(self):
         if self._q is None:
-            import pykx as kx
-            self._q = kx.SyncQConnection(host=self.host, port=self.port)
+            self._q = open_connection(self.host, self.port)
         return self._q
 
     def call(self, fn: str, *args):

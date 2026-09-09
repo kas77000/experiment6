@@ -88,7 +88,10 @@ def main() -> int:
 
     # 1. Does the handle work at all, and does the gateway accept an
     #    expression? If even "1+1" fails, nothing below means anything.
-    conn = kx.SyncQConnection(host=host, port=port)
+    # no_ctx=True: pykx otherwise builds its context interface by evaluating
+    # `q` on the REMOTE, and this gateway uses that name for a char vector of
+    # its own, so the CONSTRUCTOR dies before any query is sent.
+    conn = kx.SyncQConnection(host=host, port=port, no_ctx=True)
     attempt("h('1+1')                       plain expression",
             lambda: conn("1+1"))
     attempt("h('.z.D')                      server date",

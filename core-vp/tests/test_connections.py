@@ -1,5 +1,7 @@
 import datetime as dt
 
+import pytest
+
 from core.connections import (DEFAULT_PROFILE_TABLE, Connection, probe,
                               profile_call, profile_call_repr, qsym,
                               resolve_kind)
@@ -176,3 +178,68 @@ def test_probe_reports_a_dead_endpoint_instead_of_raising():
                    sample_date=dt.date(2026, 7, 29), sample_sym="000001.C2")
     assert all(r["ok"] is False for r in report)
     assert "no listener" in report[0]["detail"]
+
+
+# ---------------------------------------------------------------- transport
+class _FakeKx:
+    """Stands in for pykx. Records how SyncQConnection was constructed."""
+
+    def __init__(self, accepts_no_ctx=True, ctx_bomb=False):
+        self.accepts_no_ctx = accepts_no_ctx
+        self.ctx_bomb = ctx_bomb
+        self.calls = []
+
+    def SyncQConnection(self, host, port, **kw):   # noqa: N802
+        self.calls.append(kw)
+        if "no_ctx" in kw and not self.accepts_no_ctx:
+            raise TypeError("__init__() got an unexpected keyword argument "
+                            "'no_ctx'")
+        if not kw.get("no_ctx") and self.ctx_bomb:
+            # what the VPROF gateway does: pykx resolves `q` on the remote,
+            # finds the server's own char vector, and dies building the context
+            raise AttributeError(
+                "'CharVector' object has no attribute '_context_keys'")
+        return ("handle", host, port)
+
+
+def _with_fake_pykx(monkeypatch, fake):
+    import sys
+    monkeypatch.setitem(sys.modules, "pykx", fake)
+
+
+def test_the_context_interface_is_switched_off(monkeypatch):
+    """pykx builds it by evaluating `q` on the REMOTE, and this gateway uses
+    that name for a char vector of its own."""
+    import core.connections as m
+    fake = _FakeKx()
+    _with_fake_pykx(monkeypatch, fake)
+    m.open_connection("vprof", 5100)
+    assert fake.calls == [{"no_ctx": True}]
+
+
+def test_a_gateway_that_breaks_the_context_interface_now_connects(monkeypatch):
+    import core.connections as m
+    fake = _FakeKx(ctx_bomb=True)
+    _with_fake_pykx(monkeypatch, fake)
+    assert m.open_connection("vprof", 5100) == ("handle", "vprof", 5100)
+
+
+def test_an_older_pykx_without_the_flag_still_connects(monkeypatch):
+    import core.connections as m
+    fake = _FakeKx(accepts_no_ctx=False)
+    _with_fake_pykx(monkeypatch, fake)
+    assert m.open_connection("vprof", 5100) == ("handle", "vprof", 5100)
+    assert fake.calls == [{"no_ctx": True}, {}]
+
+
+def test_any_other_type_error_is_not_swallowed(monkeypatch):
+    """The fallback exists for one missing keyword, not as a blanket retry."""
+    import core.connections as m
+
+    class Hostile(_FakeKx):
+        def SyncQConnection(self, host, port, **kw):   # noqa: N802
+            raise TypeError("port must be an integer")
+
+    _with_fake_pykx(monkeypatch, Hostile())
+    with pytest.raises(TypeError, match="port must be an integer"):
+        m.open_connection("vprof", 5100)

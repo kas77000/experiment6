@@ -191,7 +191,7 @@ Three things matter there, and all three are load-bearing:
 
 | | Why |
 |---|---|
-| `SyncQConnection` | What every working script here uses. No q licence and no `QHOME` are needed, because all evaluation happens on the server. |
+| `SyncQConnection(no_ctx=True)` | What every working script here uses, plus the context interface **off** — see below. No q licence and no `QHOME` are needed, because all evaluation happens on the server. |
 | arguments, not a string | Interpolating means hand-formatting dates and symbols and hoping q parses them back into the right types. Passing them lets pykx convert. |
 | **`sym.encode()`** | pykx turns a Python `str` into a q **char vector**, *not* a symbol. Bytes is what makes it a symbol. |
 
@@ -199,6 +199,26 @@ That last one has a signature failure: passing a `str` where q wants a symbol su
 as `AttributeError: 'CharVector' object has no attribute '_context_keys'`, which names
 neither the symbol nor the argument. `core.connections.qsym()` exists so the conversion
 is never left to chance.
+
+#### The context interface must be off
+
+`no_ctx=True` is not optional against this gateway. Building a connection, pykx sets
+up its context interface and evaluates `self.ctx.q` — which resolves the name **`q` in
+the remote namespace**. The VPROF gateway already uses `q` for a char vector of its
+own, so pykx gets a string where it expects its handle and dies **in the constructor**,
+before any query is sent:
+
+```
+pykx/ipc.py, line 654, in _init          super().__init__()
+pykx/__init__.py, line 129, in __init__  *self.ctx.q._context_keys,
+AttributeError: 'CharVector' object has no attribute '_context_keys'
+```
+
+The order and qatt servers do not define a global `q`, which is why only the gateway
+fails and why other pykx scripts on the same machine are unaffected. Nothing here uses
+the context interface — every call names its function explicitly — so turning it off
+costs nothing and removes a whole class of failure from names on the server colliding
+with pykx's own.
 
 A reply that is a q **string** rather than a table — which is how a restricted gateway
 reports a rejected call — is raised with the server's own message attached, rather than
